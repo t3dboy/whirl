@@ -182,10 +182,10 @@ export class Combat {
           // wide error so they're easy to dodge — not snipers
           const la = e.kind === 'spreader'
             ? this.clock * 0.6 + (s / e.burst) * Math.PI * 2
-            : baseA + (Math.random() - 0.5) * 0.7 + (e.burst > 1 ? (s - (e.burst - 1) / 2) * 0.22 : 0);
+            : baseA + (Math.random() - 0.5) * 1.3 + (e.burst > 1 ? (s - (e.burst - 1) / 2) * 0.22 : 0);
           this.missiles.push({
-            pos: { ...e.pos }, vel: v(Math.cos(la) * 140, Math.sin(la) * 140), owner: 'enemy', life: 3.4,
-            accel: 300, maxSpeed: 290, turn: e.kind === 'spreader' ? 0 : 1.4, dmg: 1, pierce: 0, hue: e.hue, trail: [],
+            pos: { ...e.pos }, vel: v(Math.cos(la) * 140, Math.sin(la) * 140), owner: 'enemy', life: 3.0,
+            accel: 240, maxSpeed: 250, turn: e.kind === 'spreader' ? 0 : 0.55, dmg: 1, pierce: 0, hue: e.hue, trail: [],
           });
         }
         bus.post({ type: 'missileFire', owner: 'enemy', at: { ...e.pos } });
@@ -226,6 +226,17 @@ export class Combat {
             if (e.hp <= 0) { this.enemies = this.enemies.filter((x) => x !== e); bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty }); }
             if (ms.pierce > 0) ms.pierce--;   // punch through to the next drone
             else dead = true;
+            break;
+          }
+        }
+      }
+      // player shots can knock enemy missiles out of the sky on contact
+      if (!dead && ms.owner === 'player') {
+        for (const em of this.missiles) {
+          if (em.owner !== 'enemy' || em.life <= 0) continue;
+          if (dist(ms.pos, em.pos) < MISSILE_R * 2 + 4) {
+            em.life = 0; bus.post({ type: 'enemyHit', at: { ...em.pos } }); // explodes on its own cleanup
+            if (ms.pierce > 0) ms.pierce--; else dead = true;
             break;
           }
         }

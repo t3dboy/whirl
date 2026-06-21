@@ -25,8 +25,8 @@ export class Run {
     const d = this.depth;
     const hd = d + this.pact; // hazard depth
     const f = generateField(`${this.seed}-d${d}`, {
-      count: Math.min(24, 12 + hd * 2),
-      extent: 1700 + hd * 160,
+      count: Math.min(40, 20 + hd * 3),
+      extent: 3200 + hd * 260,
       spacing: 40,
       depth: hd,
     });

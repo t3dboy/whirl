@@ -431,23 +431,25 @@ export class Renderer {
     for (const d of pu.dropped) {
       const p = this.w2b({ x: d.x, y: d.y });
       const def = POWERUPS[d.type as PType];
-      const sz = (10 + Math.sin(this.t * 4 + d.id) * 1.5) * Math.max(0.7, bz);
+      const sz = 11 * Math.max(0.7, bz);
+      const pulse = Math.sin(this.t * 4 + d.id) * 0.5 + 0.5; // 0..1
       s.save();
-      s.globalCompositeOperation = 'lighter';
-      const g = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, sz * 2.4);
-      g.addColorStop(0, hsl(def.hue, 100, 70, 0.85));
-      g.addColorStop(1, hsl(def.hue, 100, 60, 0));
-      s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, sz * 2.4, 0, Math.PI * 2); s.fill();
-      s.restore();
-      // rounded chip with the glyph
+      // solid chip with the glyph (no glow — reads clean against any biome)
       s.fillStyle = hsl(def.hue, 85, 30);
       s.strokeStyle = hsl(def.hue, 100, 72); s.lineWidth = 2;
       s.beginPath(); s.arc(p.x, p.y, sz, 0, Math.PI * 2); s.fill(); s.stroke();
+      // pulsing line outline — expands outward and fades, like a sonar ping
+      const ringR = sz + 4 + pulse * 7;
+      s.strokeStyle = hsl(def.hue, 100, 72, Math.max(0.06, 0.7 * (1 - pulse)));
+      s.lineWidth = 1.6;
+      s.beginPath(); s.arc(p.x, p.y, ringR, 0, Math.PI * 2); s.stroke();
+      // glyph
       s.fillStyle = hsl(def.hue, 100, 92);
       s.font = `800 ${Math.round(sz * 1.2)}px ui-rounded, system-ui, sans-serif`;
       s.textAlign = 'center'; s.textBaseline = 'middle';
       s.fillText(def.glyph, p.x, p.y + 1);
       s.textBaseline = 'alphabetic';
+      s.restore();
     }
   }
 
