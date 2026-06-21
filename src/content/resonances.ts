@@ -80,6 +80,12 @@ export const RESONANCES: Resonance[] = [
   { id: 'salvo', name: 'Salvo Array', family: 'combat', rarity: 'cosmic',
     blurb: 'A three-missile fan, reloading fast. Total saturation.',
     mods: { multiShot: 2, fireRateMul: 1.3 } },
+  { id: 'scavenger', name: 'Scavenger', family: 'combat', rarity: 'common',
+    blurb: 'Downed drones drop powerups far more often.',
+    mods: { powerDrop: 0.2 } },
+  { id: 'amplifier', name: 'Amplifier', family: 'combat', rarity: 'rare',
+    blurb: 'Every powerup hits harder and lasts longer.',
+    mods: { powerMult: 0.6 } },
 
   // ── exotic ─────────────────────────────────────────────────────
   { id: 'comet', name: 'Comet Heart', family: 'exotic', rarity: 'rare',
@@ -131,6 +137,7 @@ export function foldMods(into: Partial<ResonanceMods>, d: Partial<ResonanceMods>
   addv('tractor', d.tractor); addv('grazeWard', d.grazeWard);
   addv('platesBonus', d.platesBonus); addv('shieldBonus', d.shieldBonus);
   addv('multiShot', d.multiShot); addv('missileDmg', d.missileDmg); addv('pierce', d.pierce);
+  addv('powerDrop', d.powerDrop); addv('powerMult', d.powerMult);
   flag('afterburner', d.afterburner); flag('magnet', d.magnet);
   flag('wakeTrail', d.wakeTrail); flag('chain', d.chain);
   return m;

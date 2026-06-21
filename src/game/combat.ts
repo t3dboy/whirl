@@ -40,6 +40,7 @@ export class Combat {
   playerWeapon: { seeker: boolean; maxSpeed: number; accel: number } = { seeker: false, maxSpeed: 560, accel: 700 };
   /** Drafted combat upgrades, refreshed when Resonances change. */
   upgrades = { cooldown: PLAYER_COOLDOWN, shots: 1, dmg: 1, pierce: 0 };
+  frozen = false; // Time Stop — enemies hold still and don't fire
   private clock = 0;
   private nid = 1;
   // reinforcements: the longer you linger in a field, the faster they arrive
@@ -94,6 +95,19 @@ export class Combat {
     this.enemies.push(this.makeEnemy(p, this.spawnDepth, Math.random));
   }
 
+  /** Nuke — destroy every enemy within `radius` of a point. Returns the kills. */
+  nukeAround(center: Vec2, radius: number, bus: EventBus): number {
+    let n = 0;
+    for (const e of this.enemies.slice()) {
+      if (dist(center, e.pos) <= radius) {
+        this.enemies = this.enemies.filter((x) => x !== e);
+        bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty });
+        n++;
+      }
+    }
+    return n;
+  }
+
   private nearestEnemy(p: Vec2): Enemy | null {
     let best: Enemy | null = null, bd = Infinity;
     for (const e of this.enemies) { const d = dist(p, e.pos); if (d < bd) { bd = d; best = e; } }
@@ -144,7 +158,8 @@ export class Combat {
     }
 
     // ── enemies: hold a standoff distance, strafe, fire homing missiles ──
-    for (const e of this.enemies) {
+    // (Time Stop freezes them in place — they neither move nor fire)
+    if (!this.frozen) for (const e of this.enemies) {
       const to = sub(craft.pos, e.pos); const d = len(to) || 1; const dir = scale(to, 1 / d);
       const move = d > e.standoff + 70 ? 1 : d < e.standoff - 70 ? -1 : 0;
       const perp = v(-dir.y, dir.x);

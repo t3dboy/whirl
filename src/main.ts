@@ -12,6 +12,7 @@ import { v, len, sub, norm, add, scale, dist } from './core/math';
 import { World, DEFAULT_TUNING } from './physics/world';
 import { Run, type FieldState } from './game/run';
 import { Combat } from './game/combat';
+import { Powerups, POWERUPS, type PType } from './game/powerups';
 import { aggregateMods, draftOffer, resonanceById } from './content/resonances';
 import { hullById } from './content/hulls';
 import { weaponById } from './content/weapons';
@@ -72,12 +73,26 @@ function applyMods(): void {
   state.plates = Math.min(state.maxPlates, Math.max(state.plates, state.basePlates));
   state.maxShield = MAX_SHIELD + (mods.shieldBonus ?? 0);
   state.shield = Math.min(state.maxShield, Math.max(state.shield, MAX_SHIELD));
-  // combat loadout from drafted upgrades
-  combat.upgrades = {
+  // combat loadout from drafted upgrades (powerups layer on top each frame)
+  baseUpg = {
     cooldown: 0.32 / (mods.fireRateMul ?? 1),
     shots: 1 + (mods.multiShot ?? 0),
     dmg: 1 + (mods.missileDmg ?? 0),
     pierce: mods.pierce ?? 0,
+  };
+  refreshUpgrades();
+  // powerup global stats (raised by Resonances)
+  powerups.dropChance = 0.18 + (mods.powerDrop ?? 0);
+  powerups.mult = 1 + (mods.powerMult ?? 0);
+}
+let baseUpg = { cooldown: 0.32, shots: 1, dmg: 1, pierce: 0 };
+// fold transient powerup multipliers onto the drafted base each frame
+function refreshUpgrades(): void {
+  combat.upgrades = {
+    cooldown: baseUpg.cooldown / powerups.fireRateMul(),
+    shots: baseUpg.shots,
+    dmg: Math.round(baseUpg.dmg * powerups.damageMul()),
+    pierce: baseUpg.pierce,
   };
 }
 function chargeMul(): number { return currentMods().chargeMul ?? 1; }
@@ -86,6 +101,9 @@ function shieldRegenMul(): number { return currentMods().shieldRegenMul ?? 1; }
 
 const combat = new Combat();
 renderer.combat = combat;
+const powerups = new Powerups();
+renderer.powerups = powerups;
+const NUKE_R = 520;
 
 world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
 applyMods();
@@ -103,6 +121,9 @@ uiRoot.appendChild(hud);
 const owned = document.createElement('div');
 owned.style.cssText = `position:absolute;right:14px;top:14px;display:flex;flex-direction:column;gap:6px;align-items:flex-end;user-select:none`;
 uiRoot.appendChild(owned);
+const pups = document.createElement('div');
+pups.style.cssText = `position:absolute;left:0;right:0;top:14px;display:flex;gap:10px;justify-content:center;user-select:none`;
+uiRoot.appendChild(pups);
 const hint = document.createElement('div');
 hint.style.cssText = `position:absolute;left:0;right:0;bottom:16px;text-align:center;color:${hexA(THEME.inkDim, 0.85)};font:${THEME.font};letter-spacing:.4px;user-select:none;text-shadow:0 2px 6px #000`;
 hint.textContent = 'thrust: mouse / touch / ↑  ·  fire: Space / F  ·  brake: B  ·  orbit the gold band to relight a world  ·  reach the core to warp';
@@ -165,8 +186,17 @@ function updateMarkers(): void {
 
 function renderHUD(): void {
   const playing = state.phase === 'play';
-  hud.style.display = owned.style.display = hint.style.display = playing ? '' : 'none';
+  hud.style.display = owned.style.display = hint.style.display = pups.style.display = playing ? '' : 'none';
   fireBtn.style.display = playing && combat.enemies.length > 0 ? '' : 'none';
+  if (playing) {
+    pups.innerHTML = powerups.activeList().map((a) => {
+      const d = POWERUPS[a.type]; const frac = Math.max(0, Math.min(1, a.remaining / a.dur));
+      const col = `hsl(${d.hue},90%,65%)`;
+      return `<div style="${PANEL};border-color:${col};border-radius:10px;padding:4px 10px;min-width:64px;text-align:center;font:800 13px ${FONT_R};color:${THEME.ink}">` +
+        `<span style="color:${col}">${d.glyph}</span> ${Math.ceil(a.remaining)}s` +
+        `<div style="height:3px;margin-top:3px;border-radius:2px;background:${hexA(col, 0.25)}"><div style="height:100%;width:${frac * 100}%;background:${col};border-radius:2px"></div></div></div>`;
+    }).join('');
+  }
   brakeBtn.style.display = playing ? '' : 'none';
   renderer.shieldFrac = state.maxShield > 0 ? state.shield / state.maxShield : 0;
   renderer.warpOpen = state.relit >= state.goal && playing;
@@ -322,6 +352,7 @@ function beginRun(): void {
   combat.playerWeapon = { seeker: wpn.seeker, maxSpeed: wpn.maxSpeed, accel: wpn.accel };
   world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
   combat.spawn(runSeed + '-0', Combat.countFor(0, save.pact), field.bounds, field.spawn, save.pact);
+  powerups.reset(); world.boost = 1; combat.frozen = false;
   renderer.biome = biomeFor(0);
   heading = 0; dead = false;
   audio.setDepth(0); audio.setTrack(0); if (musicEnabled) audio.startMusic();
@@ -446,15 +477,50 @@ bus.on((e) => {
       // longer you stay killing waves, the harder your score snowballs.
       const sg = addScore(e.charge * killChargeMul());
       state.mult = Math.round((state.mult + 0.2) * 100) / 100;
-      state.charge += e.charge * chargeMul();
+      state.charge += e.charge * chargeMul() + powerups.bountyPerKill();
       renderer.shake(6); renderer.flash(350, 0.3);
       renderer.particles.burst(e.at, 28, 350, { speed: 280, life: 0.9, lum: 70 });
       renderer.floatText(e.at, `+${sg}  ×${state.mult.toFixed(1)}`, THEME.rarity.cosmic, 20);
+      powerups.maybeDrop(e.at.x, e.at.y, bus); // chance to drop a powerup
       break;
     }
     case 'enemySpawn':
       renderer.floatText(world.craft.pos, e.count > 1 ? `⚠ ${e.count} INBOUND` : '⚠ INBOUND', THEME.danger, 16);
       break;
+    case 'powerupDrop':
+      renderer.particles.burst(e.at, 8, POWERUPS[e.ptype as PType].hue, { speed: 120, life: 0.5 });
+      break;
+    case 'powerupGet': {
+      const def = POWERUPS[e.ptype as PType];
+      audio.pick(); renderer.flash(def.hue, 0.35); renderer.shake(5);
+      renderer.particles.burst(e.at, 24, def.hue, { speed: 220, life: 0.8, lum: 75 });
+      renderer.floatText(world.craft.pos, def.name.toUpperCase() + '!', `hsl(${def.hue},90%,68%)`, 22);
+      switch (e.ptype as PType) {
+        case 'repair': {
+          const heal = Math.max(1, Math.ceil(state.maxPlates * 0.33));
+          state.plates = Math.min(state.maxPlates, state.plates + heal);
+          audio.reignite();
+          break;
+        }
+        case 'magnet': {
+          // pull in every relic in the field + any other dropped orbs
+          for (const r of world.relics) if (!r.grabbed) { r.grabbed = true; bus.post({ type: 'relicGrabbed', relicId: r.id, at: { ...r.pos } }); }
+          powerups.collectAll(world.craft.pos, bus);
+          break;
+        }
+        case 'nuke': {
+          const kills = combat.nukeAround(world.craft.pos, NUKE_R, bus);
+          renderer.triggerNuke(world.craft.pos, NUKE_R);
+          renderer.flash(20, 0.9); renderer.shake(26); audio.boom();
+          if (kills) renderer.floatText(world.craft.pos, `NUKE ×${kills}`, THEME.danger, 26);
+          break;
+        }
+        case 'shield': audio.snap(1); break;
+        case 'timestop': audio.snap(0.8); break;
+        default: break; // speed / overdrive / bounty just run their timer
+      }
+      break;
+    }
     case 'relicGrabbed': {
       // grant a power-up — risky placement, so weight toward the good stuff
       const offer = draftOffer(draftRng, state.owned, 1)[0];
@@ -470,6 +536,8 @@ bus.on((e) => {
 });
 
 function losePlate(label: string, at = world.craft.pos): void {
+  // Invuln / Time Stop powerups soak everything
+  if (powerups.invincible()) { renderer.hitShield(); renderer.flash(185, 0.25); return; }
   shieldClock = 0; // any damage interrupts shield regen
   // the shield soaks the hit first — no plate lost while it holds
   if (state.shield > 0) {
@@ -532,7 +600,16 @@ function checkWarp(): void {
 const loop = new GameLoop(
   (dt) => {
     updateInput(dt);
-    if (state.phase === 'play') { world.step(dt); combat.update(dt, world.craft, world.bodies, (p) => world.gravityAt(p), bus); tickShield(dt); corral(); checkWarp(); }
+    if (state.phase === 'play') {
+      powerups.update(dt, world.craft.pos, world.craft.alive, bus);
+      world.boost = powerups.speedMul();
+      combat.frozen = powerups.frozen();
+      refreshUpgrades();
+      renderer.invuln = powerups.invincible();
+      renderer.invulnBlink = powerups.shieldExpiring();
+      renderer.frozen = powerups.frozen();
+      world.step(dt); combat.update(dt, world.craft, world.bodies, (p) => world.gravityAt(p), bus); tickShield(dt); corral(); checkWarp();
+    }
     bus.flush();
   },
   () => { renderer.update(world, 1 / 60); renderer.draw(world); renderHUD(); },
@@ -541,6 +618,6 @@ loop.start();
 openHangar(); // start at the hangar; LAUNCH begins a run
 
 (window as any).WHORL = {
-  world, state, renderer, loop, bus, save, combat, audio, beginRun, endRun, openDraft, warpDeeper, checkWarp, applyMods,
+  world, state, renderer, loop, bus, save, combat, powerups, audio, beginRun, endRun, openDraft, warpDeeper, checkWarp, applyMods,
   get run() { return run; }, get field() { return field; },
 };

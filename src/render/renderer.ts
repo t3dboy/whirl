@@ -10,6 +10,7 @@ import { Particles } from './particles';
 import type { Body, CraftState, RelicInstance } from '../core/types';
 import type { World } from '../physics/world';
 import type { Combat } from '../game/combat';
+import { type Powerups, POWERUPS, type PType } from '../game/powerups';
 
 interface FloatText { x: number; y: number; vy: number; life: number; max: number; text: string; color: string; size: number; }
 
@@ -31,6 +32,12 @@ export class Renderer {
   private warpT = 0; // warp-jump effect timer (1 → 0)
   markers: { x: number; y: number; color: string; label?: string; big?: boolean }[] = [];
   combat: Combat | null = null;
+  powerups: Powerups | null = null;
+  invuln = false;        // shield/timestop powerup active → aura
+  invulnBlink = false;   // shield about to expire → blink
+  frozen = false;        // Time Stop active → blue tint
+  private nukeFx = { t: 0, x: 0, y: 0, r: 0 };
+  triggerNuke(at: Vec2, r: number): void { this.nukeFx = { t: 1, x: at.x, y: at.y, r }; }
 
   /** Kick the light-speed jump effect. */
   triggerWarp(): void { this.warpT = 1; }
@@ -111,6 +118,7 @@ export class Renderer {
     this.cam.flash *= Math.pow(0.02, dt);
     if (this.warpT > 0) this.warpT = Math.max(0, this.warpT - dt / 0.75);
     if (this.shieldPulse > 0) this.shieldPulse = Math.max(0, this.shieldPulse - dt / 0.5);
+    if (this.nukeFx.t > 0) this.nukeFx.t = Math.max(0, this.nukeFx.t - dt / 0.6);
     this.particles.step(dt);
     for (let i = this.floats.length - 1; i >= 0; i--) {
       const f = this.floats[i];
@@ -139,6 +147,7 @@ export class Renderer {
     if (this.warpOpen) this.drawWarpGate(s, bz);
     for (const b of world.bodies) this.drawBody(s, b, bz, b.id === world.craft.soiId);
     this.drawRelics(s, world.relics, bz);
+    if (this.powerups) this.drawPowerups(s, this.powerups, bz);
     this.drawGhost(s, world);
     if (this.combat) this.drawCombat(s, this.combat, bz);
     this.particles.draw(s);
@@ -165,9 +174,17 @@ export class Renderer {
     this.postGrade(m);
 
     // ── crisp overlays (full res) ──
+    // Time Stop blue tint over the field
+    if (this.frozen) {
+      m.save();
+      m.fillStyle = hsl(210, 80, 55, 0.12);
+      m.fillRect(0, 0, this.w, this.h);
+      m.restore();
+    }
     this.drawCraftFull(m, world.craft);
     this.drawMarkers(m);
     this.drawFloats(m);
+    this.drawNuke(m);
     if (this.warpT > 0) this.drawWarpFx(m);
 
     if (this.cam.flash > 0.01) {
@@ -410,6 +427,46 @@ export class Renderer {
     }
   }
 
+  private drawPowerups(s: CanvasRenderingContext2D, pu: Powerups, bz: number): void {
+    for (const d of pu.dropped) {
+      const p = this.w2b({ x: d.x, y: d.y });
+      const def = POWERUPS[d.type as PType];
+      const sz = (10 + Math.sin(this.t * 4 + d.id) * 1.5) * Math.max(0.7, bz);
+      s.save();
+      s.globalCompositeOperation = 'lighter';
+      const g = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, sz * 2.4);
+      g.addColorStop(0, hsl(def.hue, 100, 70, 0.85));
+      g.addColorStop(1, hsl(def.hue, 100, 60, 0));
+      s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, sz * 2.4, 0, Math.PI * 2); s.fill();
+      s.restore();
+      // rounded chip with the glyph
+      s.fillStyle = hsl(def.hue, 85, 30);
+      s.strokeStyle = hsl(def.hue, 100, 72); s.lineWidth = 2;
+      s.beginPath(); s.arc(p.x, p.y, sz, 0, Math.PI * 2); s.fill(); s.stroke();
+      s.fillStyle = hsl(def.hue, 100, 92);
+      s.font = `800 ${Math.round(sz * 1.2)}px ui-rounded, system-ui, sans-serif`;
+      s.textAlign = 'center'; s.textBaseline = 'middle';
+      s.fillText(def.glyph, p.x, p.y + 1);
+      s.textBaseline = 'alphabetic';
+    }
+  }
+
+  private drawNuke(m: CanvasRenderingContext2D): void {
+    if (this.nukeFx.t <= 0) return;
+    const p = this.w2s({ x: this.nukeFx.x, y: this.nukeFx.y });
+    const prog = 1 - this.nukeFx.t;          // 0..1 expanding
+    const r = this.nukeFx.r * this.cam.zoom * prog;
+    m.save();
+    m.globalCompositeOperation = 'lighter';
+    m.strokeStyle = hsl(28, 100, 75, this.nukeFx.t * 0.9);
+    m.lineWidth = 6 + this.nukeFx.t * 14;
+    m.beginPath(); m.arc(p.x, p.y, r, 0, Math.PI * 2); m.stroke();
+    m.strokeStyle = hsl(0, 100, 70, this.nukeFx.t * 0.6);
+    m.lineWidth = 2;
+    m.beginPath(); m.arc(p.x, p.y, r * 0.8, 0, Math.PI * 2); m.stroke();
+    m.restore();
+  }
+
   private drawRelics(s: CanvasRenderingContext2D, relics: RelicInstance[], bz: number): void {
     for (const r of relics) {
       if (r.grabbed) continue;
@@ -452,9 +509,23 @@ export class Renderer {
   // bright outline, a glow, and a faint locator ring so you can never lose it.
   private drawCraftFull(m: CanvasRenderingContext2D, c: CraftState): void {
     if (!c.alive) return;
+    // blink during the final seconds of the Invuln powerup
+    if (this.invulnBlink && Math.floor(this.t * 7) % 2 === 1) return;
     const p = this.w2s(c.pos);
     m.save();
     m.translate(p.x, p.y);
+
+    // invulnerability aura — a bright pulsing ring
+    if (this.invuln) {
+      const pl = 0.6 + 0.4 * Math.sin(this.t * 8);
+      m.save();
+      m.globalCompositeOperation = 'lighter';
+      const ag = m.createRadialGradient(0, 0, 12, 0, 0, 34);
+      ag.addColorStop(0, hsl(185, 100, 75, 0));
+      ag.addColorStop(1, hsl(185, 100, 80, 0.4 + pl * 0.3));
+      m.fillStyle = ag; m.beginPath(); m.arc(0, 0, 34, 0, Math.PI * 2); m.fill();
+      m.restore();
+    }
 
     // shield bubble — a teal dome that brightens with charge and flares on hit
     if (this.shieldFrac > 0 || this.shieldPulse > 0) {

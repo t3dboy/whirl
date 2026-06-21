@@ -31,10 +31,23 @@ export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: Me
     o.innerHTML = '';
     const title = document.createElement('div');
     title.style.textAlign = 'center';
-    title.innerHTML =
-      `<div style="font-weight:800;font-size:42px;letter-spacing:3px;color:${THEME.good};text-shadow:0 0 24px ${hexA(THEME.good, 0.5)}">WHIRL</div>` +
+    // pixel-art logo if present, else a text wordmark fallback
+    const logo = document.createElement('img');
+    logo.src = 'logo.png';
+    logo.alt = 'WHIRL';
+    logo.style.cssText = `display:block;margin:0 auto 2px;image-rendering:pixelated;width:min(440px,72vw);height:auto;filter:drop-shadow(0 0 22px ${hexA(THEME.good, 0.45)})`;
+    logo.onerror = () => {
+      const t = document.createElement('div');
+      t.style.cssText = `font-weight:800;font-size:42px;letter-spacing:3px;color:${THEME.good};text-shadow:0 0 24px ${hexA(THEME.good, 0.5)}`;
+      t.textContent = 'WHIRL';
+      logo.replaceWith(t);
+    };
+    title.appendChild(logo);
+    const sub = document.createElement('div');
+    sub.innerHTML =
       `<div style="color:${THEME.inkDim};font-size:14px;margin-top:2px">fall inward · relight the dark</div>` +
       `<div style="margin-top:14px;font-size:20px;color:${THEME.ember};font-weight:800">✦ ${save.embers} embers</div>`;
+    title.appendChild(sub);
     o.appendChild(title);
 
     const subtitle = document.createElement('div');

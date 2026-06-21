@@ -23,6 +23,8 @@ export type GameEvent =
   | { type: 'enemyHit'; at: Vec2 }
   | { type: 'enemyDown'; at: Vec2; charge: number }
   | { type: 'enemySpawn'; count: number }
+  | { type: 'powerupDrop'; ptype: string; at: Vec2 }
+  | { type: 'powerupGet'; ptype: string; at: Vec2 }
   // ── Harvest & economy (game) ───────────────────────────────────
   | { type: 'chargeGained'; amount: number; total: number; at: Vec2 }
   | { type: 'multiplier'; value: number }

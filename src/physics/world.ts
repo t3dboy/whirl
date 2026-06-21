@@ -53,6 +53,7 @@ export class World {
   relics: RelicInstance[] = [];
   craft: CraftState;
   tuning: Tuning;
+  boost = 1; // transient thrust multiplier (Thruster Boost powerup)
   private chippedBy: Record<string, boolean> = {};
   private lockedBy: Record<string, boolean> = {}; // fired the snap this orbit pass
   private grazeLeft = 0;
@@ -156,7 +157,7 @@ export class World {
     const g = this.gravityAt(c.pos);
     let ax = g.x, ay = g.y;
     if (c.thrust > 0) {
-      const tp = this.tuning.thrustPower * (m.thrustMul ?? 1) * c.thrust;
+      const tp = this.tuning.thrustPower * (m.thrustMul ?? 1) * this.boost * c.thrust;
       ax += Math.cos(c.heading) * tp; ay += Math.sin(c.heading) * tp;
     }
     // Lodestar magnet: relit worlds keep a gentle long pull to chain orbits

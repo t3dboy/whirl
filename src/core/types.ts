@@ -185,6 +185,8 @@ export interface ResonanceMods {
   missileDmg: number;        // extra missile damage
   pierce: number;            // missiles punch through extra drones
   killChargeMul: number;     // more Charge from kills
+  powerDrop: number;         // higher powerup drop chance
+  powerMult: number;         // stronger + longer powerups
   // exotic
   wakeTrail: boolean;        // leave a luminous trail
   chain: boolean;            // relighting a world boosts ignition + payout
