@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "WHORL — a gravity roguelike. Fall inward, relight the dark.",
+  "description": "Whirl — a gravity roguelite. Fall inward, relight the dark.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
