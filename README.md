@@ -1,6 +1,6 @@
 # Whirl
 
-**Fall inward, relight the dark.** A browser-based gravity roguelite — fly a seed-craft on its thrusters through deepening fields of dead worlds, sling around their gravity, and reignite them by holding a clean orbit. Dodge drone swarms, raid relics from deadly orbits, and dive for the Cinder.
+A browser-based gravity roguelite — fly a craft with its thrusters through deepening fields of dead worlds, sling around their gravity, and reignite them by holding a clean orbit. Dodge drone swarms, raid relics from deadly orbits, and dive for the Cinder.
 
 <p align="center">
   <a href="https://t3dboy.github.io/whirl/">
