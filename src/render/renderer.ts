@@ -32,6 +32,7 @@ export class Renderer {
   paleRadius = Infinity;     // legacy (Pale removed) — left so old calls are safe
   warpOpen = false;
   private warpT = 0; // warp-jump effect timer (1 → 0)
+  private banner: { text: string; color: string; life: number; hold: number } | null = null;
   markers: { x: number; y: number; color: string; label?: string; big?: boolean }[] = [];
   combat: Combat | null = null;
   powerups: Powerups | null = null;
@@ -44,6 +45,9 @@ export class Renderer {
 
   /** Kick the light-speed jump effect. */
   triggerWarp(): void { this.warpT = 1; }
+
+  /** A big screen-centred banner that holds, then fades (e.g. "WARP OPEN"). */
+  showBanner(text: string, color: string, hold = 4): void { this.banner = { text, color, life: hold, hold }; }
 
   shieldFrac = 0;            // 0..1 of shield remaining
   private shieldPulse = 0;   // flashes on hit/regen
@@ -122,6 +126,7 @@ export class Renderer {
     this.cam.shake *= Math.pow(0.001, dt);
     this.cam.flash *= Math.pow(0.02, dt);
     if (this.warpT > 0) this.warpT = Math.max(0, this.warpT - dt / 0.75);
+    if (this.banner) { this.banner.life -= dt; if (this.banner.life <= 0) this.banner = null; }
     if (this.shieldPulse > 0) this.shieldPulse = Math.max(0, this.shieldPulse - dt / 0.5);
     if (this.nukeFx.t > 0) this.nukeFx.t = Math.max(0, this.nukeFx.t - dt / 0.6);
     this.particles.step(dt);
@@ -186,10 +191,12 @@ export class Renderer {
       m.fillRect(0, 0, this.w, this.h);
       m.restore();
     }
+    if (this.warpOpen) this.drawWarpDirection(m); // edge glow pointing to the gate
     this.drawCraftFull(m, world.craft);
     this.drawMarkers(m);
     this.drawFloats(m);
     this.drawNuke(m);
+    this.drawBanner(m);
     if (this.warpT > 0) this.drawWarpFx(m);
 
     if (this.cam.flash > 0.01) {
@@ -657,26 +664,109 @@ export class Renderer {
     m.restore();
   }
 
+  // The warp core as a pulsing SUPERNOVA — colour-cycling halo, rotating
+  // spectral rays, expanding shockwaves and a white-hot heart. It has to scream
+  // "come here". Drawn additively so the bloom pass makes it blaze.
   private drawWarpGate(s: CanvasRenderingContext2D, bz: number): void {
     const p = this.w2b(v(0, 0));
-    const base = 340 * bz;
-    const spin = this.t * 1.2;
+    const pulse = 0.5 + 0.5 * Math.sin(this.t * 2.6);  // slow body breathe
+    const flare = 0.5 + 0.5 * Math.sin(this.t * 7.0);  // fast shimmer
+    const base = (300 + 150 * pulse) * bz;
     s.save();
+    s.translate(p.x, p.y);
     s.globalCompositeOperation = 'lighter';
-    const glow = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, base);
-    glow.addColorStop(0, hsl(45, 100, 70, 0.4));
-    glow.addColorStop(1, hsl(38, 100, 55, 0));
+
+    // 1. vast colour-cycling halo
+    const glow = s.createRadialGradient(0, 0, 0, 0, 0, base * 1.7);
+    glow.addColorStop(0, hsl(50, 100, 96, 0.55));
+    glow.addColorStop(0.22, hsl(160 + 50 * Math.sin(this.t * 1.3), 100, 70, 0.40));
+    glow.addColorStop(0.6, hsl(265 + 40 * Math.sin(this.t * 0.9), 100, 62, 0.16));
+    glow.addColorStop(1, hsl(280, 100, 55, 0));
     s.fillStyle = glow;
-    s.beginPath(); s.arc(p.x, p.y, base, 0, Math.PI * 2); s.fill();
-    for (let i = 0; i < 3; i++) {
-      const rr = base * (0.4 + i * 0.22) * (0.92 + 0.08 * Math.sin(this.t * 3 + i));
-      s.strokeStyle = hsl(44 - i * 6, 100, 72, 0.7 - i * 0.15);
-      s.lineWidth = 2 - i * 0.4;
-      s.setLineDash([10, 8]); s.lineDashOffset = (i % 2 ? -1 : 1) * spin * 22;
-      s.beginPath(); s.arc(p.x, p.y, rr, 0, Math.PI * 2); s.stroke();
+    s.beginPath(); s.arc(0, 0, base * 1.7, 0, Math.PI * 2); s.fill();
+
+    // 2. rotating supernova rays, each its own colour, each pulsing in length
+    const rays = 18;
+    s.rotate(this.t * 0.55);
+    for (let i = 0; i < rays; i++) {
+      const a = (i / rays) * Math.PI * 2;
+      const len = base * (1.05 + 0.6 * Math.sin(this.t * 4 + i * 1.27));
+      const wob = 0.018 + 0.012 * flare;
+      s.fillStyle = hsl((i * 20 + this.t * 70) % 360, 100, 70, 0.45);
+      s.beginPath();
+      s.moveTo(0, 0);
+      s.lineTo(Math.cos(a - wob) * len, Math.sin(a - wob) * len);
+      s.lineTo(Math.cos(a + wob) * len, Math.sin(a + wob) * len);
+      s.closePath(); s.fill();
     }
-    s.setLineDash([]);
+    s.rotate(-this.t * 0.55);
+
+    // 3. expanding shockwave rings
+    for (let k = 0; k < 3; k++) {
+      const phase = (this.t * 0.7 + k / 3) % 1;
+      const rr = base * (0.4 + phase * 1.5);
+      s.strokeStyle = hsl(185, 100, 78, 0.6 * (1 - phase));
+      s.lineWidth = (3 * (1 - phase) + 0.6) * bz;
+      s.beginPath(); s.arc(0, 0, rr, 0, Math.PI * 2); s.stroke();
+    }
+
+    // 4. white-hot pulsing core
+    const coreR = base * (0.2 + 0.07 * flare);
+    const core = s.createRadialGradient(0, 0, 0, 0, 0, coreR);
+    core.addColorStop(0, hsl(50, 100, 100, 0.98));
+    core.addColorStop(0.5, hsl(46, 100, 82, 0.85));
+    core.addColorStop(1, hsl(40, 100, 70, 0));
+    s.fillStyle = core;
+    s.beginPath(); s.arc(0, 0, coreR, 0, Math.PI * 2); s.fill();
     s.restore();
+  }
+
+  // A glow hugging the screen edge in the direction of the warp core, so the way
+  // to the open gate is unmistakable even when it's off-screen.
+  private drawWarpDirection(m: CanvasRenderingContext2D): void {
+    const core = this.w2s(v(0, 0));
+    const cx = this.w / 2, cy = this.h / 2;
+    const dx = core.x - cx, dy = core.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d, uy = dy / d;
+    const ex = cx + ux * this.w * 0.62, ey = cy + uy * this.h * 0.62;
+    const pulse = 0.5 + 0.5 * Math.sin(this.t * 4);
+    const R = Math.max(this.w, this.h) * (0.55 + 0.12 * pulse);
+    m.save();
+    m.globalCompositeOperation = 'lighter';
+    const g = m.createRadialGradient(ex, ey, 0, ex, ey, R);
+    g.addColorStop(0, hsl(150, 100, 66, 0.30 + 0.16 * pulse));
+    g.addColorStop(0.5, hsl(172, 100, 60, 0.10));
+    g.addColorStop(1, hsl(172, 100, 60, 0));
+    m.fillStyle = g;
+    m.fillRect(0, 0, this.w, this.h);
+    m.restore();
+  }
+
+  // The big screen-centred banner (e.g. WARP OPEN). Holds full, then fades.
+  private drawBanner(m: CanvasRenderingContext2D): void {
+    const b = this.banner;
+    if (!b) return;
+    const a = clamp(b.life, 0, 1);            // fades over the final second
+    const intro = clamp((b.hold - b.life) / 0.25, 0, 1); // quick scale-in
+    const pulse = 1 + 0.03 * Math.sin(this.t * 5);
+    const sc = (0.8 + 0.2 * intro) * pulse;
+    const cx = this.w / 2, cy = this.h * 0.42;
+    m.save();
+    m.textAlign = 'center'; m.textBaseline = 'middle';
+    m.translate(cx, cy); m.scale(sc, sc);
+    // glow behind the text
+    m.globalCompositeOperation = 'lighter';
+    const g = m.createRadialGradient(0, 0, 0, 0, 0, 340);
+    g.addColorStop(0, hsl(150, 100, 60, 0.28 * a)); g.addColorStop(1, hsl(150, 100, 60, 0));
+    m.fillStyle = g; m.fillRect(-360, -90, 720, 180);
+    m.globalCompositeOperation = 'source-over';
+    m.font = `800 38px ui-rounded, "Avenir Next", system-ui, sans-serif`;
+    m.lineWidth = 6; m.strokeStyle = hsl(20, 40, 4, a * 0.9);
+    m.strokeText(b.text, 0, 0);
+    m.globalAlpha = a; m.fillStyle = b.color; m.fillText(b.text, 0, 0);
+    m.globalAlpha = 1;
+    m.restore();
   }
 
   private drawMarkers(m: CanvasRenderingContext2D): void {

@@ -443,7 +443,8 @@ bus.on((e) => {
       renderer.floatText(e.at, `RELIT!  +${sg}`, THEME.good, 24);
       audio.reignite();
       if (state.relit >= state.goal) {
-        renderer.floatText(world.craft.pos, 'WARP OPEN — dive to the core, or stay & build your score!', THEME.good, 22, 6);
+        renderer.showBanner('★ WARP OPEN — DIVE TO THE CORE ★', THEME.good, 6);
+        renderer.flash(150, 0.5);
       }
       break;
     }
