@@ -7,8 +7,14 @@
     <title>Whirl — fall inward, relight the dark</title>
     <style>
       :root { color-scheme: dark; }
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: #06060f; }
+      * {
+        margin: 0; padding: 0; box-sizing: border-box;
+        /* kill iOS long-press text selection / copy callout that breaks immersion when holding FIRE */
+        -webkit-user-select: none; user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #06060f; touch-action: none; overscroll-behavior: none; }
       #app { position: fixed; inset: 0; }
       #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
       #ui-root { position: absolute; inset: 0; pointer-events: none; }
