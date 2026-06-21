@@ -89,8 +89,10 @@ export class Renderer {
     this.scene.height = this.bh;
   }
 
-  floatText(at: Vec2, text: string, color = THEME.charge, size = 22): void {
-    this.floats.push({ x: at.x, y: at.y, vy: -42, life: 1, max: 1, text, color, size });
+  // `hold` (seconds-ish) keeps a float fully visible longer before it fades —
+  // life>1 stays at full alpha until it drops below 1, then fades out.
+  floatText(at: Vec2, text: string, color = THEME.charge, size = 22, hold = 1): void {
+    this.floats.push({ x: at.x, y: at.y, vy: -42, life: hold, max: hold, text, color, size });
   }
   shake(i: number): void { this.cam.shake = Math.min(this.cam.shake + i, 28); }
   flash(hue: number, i = 0.5): void { this.cam.flashHue = hue; this.cam.flash = Math.max(this.cam.flash, i); }
@@ -718,7 +720,7 @@ export class Renderer {
     for (const f of this.floats) {
       const sp = this.w2s(v(f.x, f.y));
       const a = clamp(f.life, 0, 1);
-      const pop = 1 + (1 - f.life) * 0.3;
+      const pop = 1 + (1 - a) * 0.3;
       m.font = `800 ${f.size * pop}px ui-rounded, "Avenir Next", system-ui, sans-serif`;
       m.lineWidth = 4; m.strokeStyle = hsl(20, 30, 4, a * 0.85);
       m.strokeText(f.text, sp.x, sp.y);
