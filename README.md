@@ -1,6 +1,8 @@
-# Whirl
+<p align="center">
+  <img src="docs/logo.png" alt="Whirl" width="460">
+</p>
 
-A browser-based gravity roguelite — fly a craft with its thrusters through deepening fields of dead worlds, sling around their gravity, and reignite them by holding a clean orbit. Dodge drone swarms, raid relics from deadly orbits, and dive for the Cinder.
+A browser-based gravity roguelite — fly a craft with its thrusters through deepening fields of dead worlds, sling around their gravity, and reignite them by holding a clean orbit. Dodge drone swarms, grab powerups, raid relics from deadly orbits, and dive for the Cinder.
 
 <p align="center">
   <a href="https://t3dboy.github.io/whirl/">
@@ -22,6 +24,7 @@ A browser-based gravity roguelite — fly a craft with its thrusters through dee
 ## What's in it
 - Custom gravity flight — spheres of influence, orbit-lock reignition, gravity-slung missiles
 - Enemies & combat — drone swarms, heavy hulks, manual missiles, a regenerating shield
+- Battlefield powerups — repair, overdrive, time-stop, nuke, invincibility and more, dropped by kills
 - Roguelite meta — bank Embers, unlock alternate hulls & weapons, Ascension difficulty, carry a power-up forward
 - Drafted power-ups that stack into builds, scaling richer the deeper you fall
 - A score-multiplier risk/reward loop: reinforcements escalate the longer you stay
