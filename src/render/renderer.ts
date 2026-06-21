@@ -11,6 +11,8 @@ import type { Body, CraftState, RelicInstance } from '../core/types';
 import type { World } from '../physics/world';
 import type { Combat } from '../game/combat';
 import { type Powerups, POWERUPS, type PType } from '../game/powerups';
+import { drawShip } from './ships';
+import { type HullDef, hullById } from '../content/hulls';
 
 interface FloatText { x: number; y: number; vy: number; life: number; max: number; text: string; color: string; size: number; }
 
@@ -36,6 +38,7 @@ export class Renderer {
   invuln = false;        // shield/timestop powerup active → aura
   invulnBlink = false;   // shield about to expire → blink
   frozen = false;        // Time Stop active → blue tint
+  hull: HullDef = hullById('seedling'); // current craft look
   private nukeFx = { t: 0, x: 0, y: 0, r: 0 };
   triggerNuke(at: Vec2, r: number): void { this.nukeFx = { t: 1, x: at.x, y: at.y, r }; }
 
@@ -147,7 +150,7 @@ export class Renderer {
     if (this.warpOpen) this.drawWarpGate(s, bz);
     for (const b of world.bodies) this.drawBody(s, b, bz, b.id === world.craft.soiId);
     this.drawRelics(s, world.relics, bz);
-    if (this.powerups) this.drawPowerups(s, this.powerups, bz);
+    if (this.powerups) { this.drawMotes(s, this.powerups); this.drawPowerups(s, this.powerups, bz); }
     this.drawGhost(s, world);
     if (this.combat) this.drawCombat(s, this.combat, bz);
     this.particles.draw(s);
@@ -356,35 +359,31 @@ export class Renderer {
     s.globalCompositeOperation = 'lighter';
     s.lineCap = 'round';
     for (const ms of combat.missiles) {
-      const cue = ms.owner === 'player' ? 185 : 348; // small head tint to tell sides apart
+      const h = ms.hue;                       // colour by source (hull / enemy type)
       const trail = ms.trail;
-      // flame trail: hot orange-yellow at the head fading to deep red at the tail
+      // glowing trail in the missile's colour, brightening toward the head
       for (let i = 1; i < trail.length; i++) {
         const a = this.w2b(trail[i - 1]), b = this.w2b(trail[i]);
         const f = i / trail.length;          // 0 = oldest, 1 = newest
-        const hue = 6 + f * 36;              // red → orange/amber toward the head
         const flick = 0.85 + Math.random() * 0.3;
-        s.strokeStyle = hsl(hue, 100, 45 + f * 28, f * f * 0.8 * flick);
+        s.strokeStyle = hsl(h, 100, 50 + f * 30, f * f * 0.85 * flick);
         s.lineWidth = (0.5 + f * 4) * flick;
         s.beginPath(); s.moveTo(a.x, a.y); s.lineTo(b.x, b.y); s.stroke();
       }
-      // bright fiery head
+      // bright head
       const p = this.w2b(ms.pos);
       const ang = Math.atan2(ms.vel.y, ms.vel.x);
       const r = 7 + Math.random() * 2;
       const gl = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 1.6);
-      gl.addColorStop(0, hsl(48, 100, 92, 0.95));
-      gl.addColorStop(0.5, hsl(28, 100, 60, 0.7));
-      gl.addColorStop(1, hsl(8, 100, 50, 0));
+      gl.addColorStop(0, hsl(h, 100, 92, 0.95));
+      gl.addColorStop(0.5, hsl(h, 100, 65, 0.7));
+      gl.addColorStop(1, hsl(h, 100, 55, 0));
       s.fillStyle = gl;
       s.beginPath(); s.arc(p.x, p.y, r * 1.6, 0, Math.PI * 2); s.fill();
-      // hot tip + a thin owner-colored core
       s.save();
       s.translate(p.x, p.y); s.rotate(ang);
-      s.fillStyle = hsl(45, 100, 96);
+      s.fillStyle = hsl(h, 60, 96);
       s.beginPath(); s.moveTo(8, 0); s.lineTo(-5, 2.5); s.lineTo(-5, -2.5); s.closePath(); s.fill();
-      s.fillStyle = hsl(cue, 90, 70);
-      s.beginPath(); s.arc(1, 0, 1.8, 0, Math.PI * 2); s.fill();
       s.restore();
     }
     s.restore();
@@ -393,21 +392,22 @@ export class Renderer {
     for (const e of combat.enemies) {
       const p = this.w2b(e.pos);
       const r = Math.max(7, e.r * bz * 0.62);
-      const hulk = e.kind === 'hulk';
-      const sides = hulk ? 6 : 3;
+      const h = e.hue;
+      const sides = e.kind === 'hulk' ? 6 : e.kind === 'spreader' ? 4 : 3;
+      const big = e.kind !== 'drone';
       s.save();
       s.globalCompositeOperation = 'lighter';
       const gl = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
-      gl.addColorStop(0, hsl(hulk ? 335 : 348, 95, 60, hulk ? 0.7 : 0.55));
-      gl.addColorStop(1, hsl(348, 95, 50, 0));
+      gl.addColorStop(0, hsl(h, 95, 60, big ? 0.7 : 0.55));
+      gl.addColorStop(1, hsl(h, 95, 50, 0));
       s.fillStyle = gl;
       s.beginPath(); s.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2); s.fill();
       s.restore();
-      const spin = this.t * (hulk ? 0.6 : 1.5) + e.phase;
+      const spin = this.t * (e.kind === 'hulk' ? 0.6 : e.kind === 'spreader' ? 1.0 : 1.5) + e.phase;
       s.save();
       s.translate(p.x, p.y); s.rotate(spin);
-      s.fillStyle = hsl(hulk ? 338 : 350, 85, hulk ? 26 : 22);
-      s.strokeStyle = hsl(hulk ? 330 : 350, 100, 65); s.lineWidth = hulk ? 2.5 : 1.5;
+      s.fillStyle = hsl(h, 85, big ? 26 : 22);
+      s.strokeStyle = hsl(h, 100, 68); s.lineWidth = big ? 2.5 : 1.5;
       s.beginPath();
       for (let k = 0; k < sides; k++) {
         const a = (k / sides) * Math.PI * 2;
@@ -415,11 +415,11 @@ export class Renderer {
       }
       s.closePath(); s.fill(); s.stroke();
       s.fillStyle = hsl(15, 100, 70);
-      s.beginPath(); s.arc(0, 0, hulk ? 4 : 2.5, 0, Math.PI * 2); s.fill();
+      s.beginPath(); s.arc(0, 0, big ? 4 : 2.5, 0, Math.PI * 2); s.fill();
       s.restore();
       // health arc for tougher enemies
       if (e.maxHp > 1 && e.hp < e.maxHp) {
-        s.strokeStyle = hsl(348, 100, 65, 0.9);
+        s.strokeStyle = hsl(h, 100, 65, 0.9);
         s.lineWidth = 2.5; s.lineCap = 'round';
         s.beginPath(); s.arc(p.x, p.y, r + 6, -Math.PI / 2, -Math.PI / 2 + (e.hp / e.maxHp) * Math.PI * 2); s.stroke();
         s.lineCap = 'butt';
@@ -448,6 +448,30 @@ export class Renderer {
       s.textAlign = 'center'; s.textBaseline = 'middle';
       s.fillText(def.glyph, p.x, p.y + 1);
       s.textBaseline = 'alphabetic';
+    }
+  }
+
+  private drawMotes(s: CanvasRenderingContext2D, pu: Powerups): void {
+    if (pu.motes.length === 0) return;
+    // faceted purple gems — no glow, so they read as solid collectible loot
+    for (const m of pu.motes) {
+      const p = this.w2b({ x: m.x, y: m.y });
+      const r = 4.6 + Math.sin(this.t * 6 + m.x * 0.05) * 0.5; // gentle twinkle, not a halo
+      s.save();
+      s.translate(p.x, p.y);
+      // diamond body
+      s.beginPath();
+      s.moveTo(0, -r); s.lineTo(r * 0.78, 0); s.lineTo(0, r); s.lineTo(-r * 0.78, 0);
+      s.closePath();
+      s.fillStyle = hsl(283, 72, 50);
+      s.fill();
+      s.strokeStyle = hsl(287, 90, 80); s.lineWidth = 1; s.stroke();
+      // bright top-left facet for a cut-gem read
+      s.beginPath();
+      s.moveTo(0, -r); s.lineTo(-r * 0.78, 0); s.lineTo(0, 0);
+      s.closePath();
+      s.fillStyle = hsl(291, 95, 82); s.fill();
+      s.restore();
     }
   }
 
@@ -583,24 +607,17 @@ export class Renderer {
       }
     }
 
-    // cyan glow halo
+    // glow halo in the hull's colour
     m.globalCompositeOperation = 'lighter';
     const gl = m.createRadialGradient(0, 0, 0, 0, 0, 22);
-    gl.addColorStop(0, hsl(180, 100, 80, 0.9));
-    gl.addColorStop(1, hsl(185, 100, 60, 0));
+    gl.addColorStop(0, hsl(this.hull.missileHue, 100, 80, 0.9));
+    gl.addColorStop(1, hsl(this.hull.missileHue, 100, 60, 0));
     m.fillStyle = gl;
     m.beginPath(); m.arc(0, 0, 22, 0, Math.PI * 2); m.fill();
     m.globalCompositeOperation = 'source-over';
 
-    // bright hull with a dark outline for contrast on any background
-    m.beginPath();
-    m.moveTo(15, 0); m.lineTo(-9, 8); m.lineTo(-4, 0); m.lineTo(-9, -8); m.closePath();
-    m.fillStyle = '#eafffb';
-    m.fill();
-    m.lineWidth = 2.5; m.strokeStyle = hsl(190, 90, 35, 0.95); m.stroke();
-    // cyan cockpit accent
-    m.fillStyle = hsl(180, 100, 60);
-    m.beginPath(); m.arc(2, 0, 3, 0, Math.PI * 2); m.fill();
+    // the hull's distinct silhouette
+    drawShip(m, this.hull, 14);
     m.restore();
   }
 

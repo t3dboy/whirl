@@ -549,6 +549,59 @@ export class AudioEngine {
     osc.start(t); osc.stop(t + 0.32);
   }
 
+  /**
+   * A craft-specific death explosion — each hull blows up with its own voice, so
+   * losing a Glass shatters where an Anchor lands a deep slab-boom. Falls back to
+   * the generic boom() for any unknown hull id.
+   */
+  boomShip(kind: string): void {
+    if (!this.ctx || !this.master || !this.noise) { return; }
+    const t = this.ctx.currentTime;
+    interface Ex {
+      dur: number; nType: BiquadFilterType; cut0: number; cut1: number; nGain: number; q?: number;
+      body: number; bodyEnd: number; bodyGain: number; bodyType: OscillatorType;
+      ring: number[]; ringType: OscillatorType;
+    }
+    const presets: Record<string, Ex> = {
+      // Seedling — the balanced reference blast
+      seedling: { dur: 0.34, nType: 'lowpass', cut0: 2400, cut1: 200, nGain: 0.5, body: -12, bodyEnd: -30, bodyGain: 0.5, bodyType: 'sine', ring: [], ringType: 'sine' },
+      // Glass — a bright, brittle shatter with high glassy shards ringing out
+      glass: { dur: 0.55, nType: 'highpass', cut0: 1800, cut1: 5200, nGain: 0.42, body: -2, bodyEnd: -14, bodyGain: 0.18, bodyType: 'sine', ring: [24, 31, 36, 41], ringType: 'sine' },
+      // Anchor — a heavy, slow, deep slab collapse with a long sub thump
+      anchor: { dur: 0.72, nType: 'lowpass', cut0: 1500, cut1: 80, nGain: 0.62, body: -22, bodyEnd: -40, bodyGain: 0.78, bodyType: 'sine', ring: [], ringType: 'sine' },
+      // Comet — an airy, dissipating whoosh that bleeds away into the void
+      comet: { dur: 0.82, nType: 'bandpass', cut0: 3000, cut1: 600, nGain: 0.5, q: 1.2, body: -10, bodyEnd: -34, bodyGain: 0.3, bodyType: 'sine', ring: [], ringType: 'sine' },
+      // Forge — a gritty industrial clang, sawtooth body + metallic overtones
+      forge: { dur: 0.5, nType: 'lowpass', cut0: 2000, cut1: 140, nGain: 0.55, body: -16, bodyEnd: -30, bodyGain: 0.55, bodyType: 'sawtooth', ring: [7, 12, 19], ringType: 'sawtooth' },
+    };
+    const P = presets[kind];
+    if (!P) { this.boom(); return; }
+    // noise burst swept through the filter — the texture of the blast
+    const src = this.ctx.createBufferSource(); src.buffer = this.noise;
+    const filter = this.ctx.createBiquadFilter(); filter.type = P.nType;
+    filter.frequency.setValueAtTime(P.cut0, t);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(40, P.cut1), t + P.dur);
+    if (P.q) filter.Q.value = P.q;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(P.nGain, t);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + P.dur);
+    src.connect(filter); filter.connect(ng); ng.connect(this.master);
+    src.start(t); src.stop(t + P.dur + 0.04);
+    // low body thump — the weight behind the blast
+    const osc = this.ctx.createOscillator(); const og = this.ctx.createGain();
+    osc.type = P.bodyType;
+    osc.frequency.setValueAtTime(this.freq(P.body), t);
+    osc.frequency.exponentialRampToValueAtTime(this.freq(P.bodyEnd), t + P.dur * 0.8);
+    og.gain.setValueAtTime(P.bodyGain, t);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + P.dur);
+    osc.connect(og); og.connect(this.master);
+    osc.start(t); osc.stop(t + P.dur + 0.04);
+    // ring pings — glassy shimmer (Glass) / metallic clang (Forge)
+    P.ring.forEach((semi, i) => {
+      this.delay(i * 0.012, () => this.voice(semi, P.dur * 0.7, 0.16, P.ringType));
+    });
+  }
+
   /** A kill confirm — a quick descending blip arp, distinct from boom(). */
   enemyDown(): void {
     if (!this.ctx) return;

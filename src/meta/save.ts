@@ -11,6 +11,7 @@ export interface MetaSave {
   pact: number;                 // ascension level (opt-in difficulty)
   carried: string | null;       // one Resonance id carried into the next run
   highScores: number[];         // top scores, descending
+  seenPowerups: string[];       // powerup types whose explainer you've already seen
   stats: { runs: number; deepest: number; relit: number };
 }
 
@@ -26,8 +27,16 @@ export function defaultSave(): MetaSave {
     pact: 0,
     carried: null,
     highScores: [],
+    seenPowerups: [],
     stats: { runs: 0, deepest: 0, relit: 0 },
   };
+}
+
+/** Wipe all progress back to a clean save (the home-screen "reset" option). */
+export function resetSave(): MetaSave {
+  const fresh = defaultSave();
+  writeSave(fresh);
+  return fresh;
 }
 
 /** Insert a score into the top-10 table (descending) and return its 1-based rank. */

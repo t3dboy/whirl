@@ -14,7 +14,7 @@ export interface WeaponDef {
 export const WEAPONS: WeaponDef[] = [
   { id: 'unguided', name: 'Slug Cannon', cost: 0, seeker: false, maxSpeed: 560, accel: 700,
     blurb: 'Dumb-fire slugs that sling wildly through gravity. Lead your shots.' },
-  { id: 'seeker', name: 'Heat-Seeker', cost: 55, seeker: true, maxSpeed: 540, accel: 680,
+  { id: 'seeker', name: 'Heat-Seeker', cost: 600, seeker: true, maxSpeed: 540, accel: 680,
     blurb: 'Locks onto the nearest drone and chases it through the gravity wells.' },
 ];
 

@@ -16,7 +16,7 @@ import { Powerups, POWERUPS, type PType } from './game/powerups';
 import { aggregateMods, draftOffer, resonanceById } from './content/resonances';
 import { hullById } from './content/hulls';
 import { weaponById } from './content/weapons';
-import { loadSave, writeSave, recordScore } from './meta/save';
+import { loadSave, writeSave, recordScore, resetSave } from './meta/save';
 import { RNG } from './core/rng';
 import { Renderer } from './render/renderer';
 import { biomeFor } from './render/biomes';
@@ -33,9 +33,7 @@ const world = new World(bus, { ...DEFAULT_TUNING });
 const renderer = new Renderer(canvas);
 const audio = new AudioEngine();
 
-const WIN_DEPTH = 7; // reach the Cinder (sector 8) to win the run
-
-const save = loadSave();
+let save = loadSave();
 let runSeed = 'whorl-1';
 let run = new Run(runSeed);
 let field: FieldState = run.startField();
@@ -51,8 +49,10 @@ const state = {
   owned: [] as string[],
   hullId: save.selectedHull,
   weaponId: save.selectedWeapon,
-  phase: 'hangar' as 'hangar' | 'play' | 'draft' | 'over',
+  phase: 'hangar' as 'hangar' | 'play' | 'draft' | 'over' | 'paused',
 };
+let emberFloatAcc = 0; // batch up ember pickups into one float text
+let saveDirty = false, saveFlushAcc = 0; // throttle localStorage writes for ember banking
 function addScore(amount: number, useMult = true): number {
   const g = Math.round(amount * (useMult ? state.mult : 1));
   state.score += g;
@@ -113,7 +113,7 @@ const FONT_R = 'ui-rounded, "Avenir Next", system-ui, sans-serif';
 const PANEL = `background:${hexA(THEME.panel, 0.5)};backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
   border:1.5px solid ${hexA(THEME.panelBorder, 0.7)};border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.45)`;
 const hudStyle = document.createElement('style');
-hudStyle.textContent = '@keyframes wpulse{0%,100%{opacity:.5}50%{opacity:1}}';
+hudStyle.textContent = '@keyframes wpulse{0%,100%{opacity:.5}50%{opacity:1}}@keyframes wfade{from{opacity:0}to{opacity:1}}';
 document.head.appendChild(hudStyle);
 const hud = document.createElement('div');
 hud.style.cssText = `position:absolute;left:16px;top:14px;padding:12px 16px;color:${THEME.ink};font-family:${FONT_R};user-select:none;${PANEL}`;
@@ -126,7 +126,7 @@ pups.style.cssText = `position:absolute;left:0;right:0;top:14px;display:flex;gap
 uiRoot.appendChild(pups);
 const hint = document.createElement('div');
 hint.style.cssText = `position:absolute;left:0;right:0;bottom:16px;text-align:center;color:${hexA(THEME.inkDim, 0.85)};font:${THEME.font};letter-spacing:.4px;user-select:none;text-shadow:0 2px 6px #000`;
-hint.textContent = 'thrust: mouse / touch / ↑  ·  fire: Space / F  ·  brake: B  ·  orbit the gold band to relight a world  ·  reach the core to warp';
+hint.textContent = 'thrust: mouse / touch / ↑  ·  fire: Space / F  ·  brake: B / ↓  ·  orbit the gold band to relight a world  ·  reach the core to warp';
 uiRoot.appendChild(hint);
 
 function hexA(hex: string, a: number): string {
@@ -296,7 +296,7 @@ function updateInput(dt: number): void {
   }
 
   // braking (B) — fire the front retro-thrusters to bleed off speed
-  braking = keys.has('KeyB') || brakeBtnDown;
+  braking = keys.has('KeyB') || keys.has('ArrowDown') || keys.has('KeyS') || brakeBtnDown;
   if (braking) c.vel = scale(c.vel, Math.max(0, 1 - 3.2 * dt));
   renderer.braking = braking;
 
@@ -331,7 +331,12 @@ function nextSeed(): number { return (perfCounter = (perfCounter * 16807) % 2147
 
 function openHangar(): void {
   state.phase = 'hangar';
-  showHangar(uiRoot, save, beginRun);
+  showHangar(uiRoot, save, beginRun, () => {
+    save = resetSave();
+    state.hullId = save.selectedHull; state.weaponId = save.selectedWeapon;
+    applyMods();
+    openHangar(); // rebuild the screen against the fresh save
+  });
 }
 
 function beginRun(): void {
@@ -350,6 +355,8 @@ function beginRun(): void {
   state.plates = state.maxPlates;
   const wpn = weaponById(state.weaponId);
   combat.playerWeapon = { seeker: wpn.seeker, maxSpeed: wpn.maxSpeed, accel: wpn.accel };
+  combat.playerHue = hullById(state.hullId).missileHue; // craft's missile colour
+  renderer.hull = hullById(state.hullId);                // distinct silhouette + glow
   world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
   combat.spawn(runSeed + '-0', Combat.countFor(0, save.pact), field.bounds, field.spawn, save.pact);
   powerups.reset(); world.boost = 1; combat.frozen = false;
@@ -392,7 +399,7 @@ function openDraft(): void {
   });
 }
 function warpDeeper(): void {
-  if (run.depth + 1 >= WIN_DEPTH) { endRun(true); return; } // reached the Cinder
+  // endless: the dive never auto-ends — you go as deep as you can survive
   field = run.warpDeeper();
   state.relit = 0; state.total = countDead(field); state.goal = field.goal;
   world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
@@ -482,11 +489,23 @@ bus.on((e) => {
       renderer.particles.burst(e.at, 28, 350, { speed: 280, life: 0.9, lum: 70 });
       renderer.floatText(e.at, `+${sg}  ×${state.mult.toFixed(1)}`, THEME.rarity.cosmic, 20);
       powerups.maybeDrop(e.at.x, e.at.y, bus); // chance to drop a powerup
+      powerups.dropEmbers(e.at.x, e.at.y, 2 + Math.floor(e.charge / 60)); // magnetised embers to collect
       break;
     }
     case 'enemySpawn':
       renderer.floatText(world.craft.pos, e.count > 1 ? `⚠ ${e.count} INBOUND` : '⚠ INBOUND', THEME.danger, 16);
       break;
+    case 'emberGet': {
+      // banked straight into the persistent meta wallet — accrues across sessions
+      save.embers += e.amount; emberFloatAcc += e.amount; saveDirty = true;
+      audio.tone(12, 0.12);
+      renderer.particles.spark(e.at, v(0, 0), 285);
+      if (emberFloatAcc >= 4) {
+        renderer.floatText(world.craft.pos, `+${emberFloatAcc} ✦`, 'hsl(287,90%,74%)', 14);
+        emberFloatAcc = 0;
+      }
+      break;
+    }
     case 'powerupDrop':
       renderer.particles.burst(e.at, 8, POWERUPS[e.ptype as PType].hue, { speed: 120, life: 0.5 });
       break;
@@ -518,6 +537,12 @@ bus.on((e) => {
         case 'shield': audio.snap(1); break;
         case 'timestop': audio.snap(0.8); break;
         default: break; // speed / overdrive / bounty just run their timer
+      }
+      // first time you grab a type, pause & explain it once
+      const pt = e.ptype as PType;
+      if (!save.seenPowerups.includes(pt)) {
+        save.seenPowerups.push(pt); saveDirty = true;
+        showPowerupExplain(pt);
       }
       break;
     }
@@ -580,7 +605,7 @@ function destroy(msg: string): void {
   renderer.shake(28); renderer.flash(0, 1);
   renderer.particles.burst(world.craft.pos, 60, 20, { speed: 420, life: 1.4 });
   renderer.floatText(world.craft.pos, msg, THEME.danger, 26);
-  audio.setThrust(false); audio.boom();
+  audio.setThrust(false); audio.boomShip(state.hullId); // each hull explodes with its own voice
   endRun(false);
 }
 
@@ -594,6 +619,37 @@ function corral(): void {
 // auto-open the draft when the goal is met and the craft nears the core
 function checkWarp(): void {
   if (state.phase === 'play' && state.relit >= state.goal && dist(world.craft.pos, v(0, 0)) < 340) openDraft();
+}
+
+// powerup explainer — freezes the run the first time you collect each type
+let pauseOverlay: HTMLDivElement | null = null;
+function showPowerupExplain(pt: PType): void {
+  if (state.phase !== 'play') return;
+  const def = POWERUPS[pt];
+  state.phase = 'paused';
+  audio.setThrust(false);
+  const col = `hsl(${def.hue},90%,66%)`;
+  const o = document.createElement('div');
+  o.style.cssText = `position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+    text-align:center;font-family:${FONT_R};color:${THEME.ink};animation:wfade .2s ease;
+    background:rgba(6,8,16,0.72);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px)`;
+  o.innerHTML =
+    `<div style="font-size:12px;letter-spacing:3px;color:${THEME.inkDim}">NEW POWERUP</div>` +
+    `<div style="font-size:62px;color:${col};text-shadow:0 0 30px ${col};line-height:1">${def.glyph}</div>` +
+    `<div style="font:800 30px ${FONT_R};color:${col}">${def.name}</div>` +
+    `<div style="max-width:420px;font-size:15px;line-height:1.5;color:${THEME.ink}">${def.blurb}</div>` +
+    `<div style="margin-top:10px;font-size:13px;color:${THEME.inkDim};animation:wpulse 1.1s infinite">press any key to continue</div>`;
+  uiRoot.appendChild(o);
+  pauseOverlay = o;
+  const resume = (): void => {
+    if (!pauseOverlay) return;
+    pauseOverlay.remove(); pauseOverlay = null;
+    if (state.phase === 'paused') state.phase = 'play';
+    window.removeEventListener('keydown', resume);
+    window.removeEventListener('pointerdown', resume);
+  };
+  window.addEventListener('keydown', resume);
+  window.addEventListener('pointerdown', resume);
 }
 
 // ── the loop ──
@@ -611,6 +667,8 @@ const loop = new GameLoop(
       world.step(dt); combat.update(dt, world.craft, world.bodies, (p) => world.gravityAt(p), bus); tickShield(dt); corral(); checkWarp();
     }
     bus.flush();
+    // bank collected embers to localStorage at most ~once a second
+    if (saveDirty) { saveFlushAcc += dt; if (saveFlushAcc > 1) { writeSave(save); saveDirty = false; saveFlushAcc = 0; } }
   },
   () => { renderer.update(world, 1 / 60); renderer.draw(world); renderHUD(); },
 );

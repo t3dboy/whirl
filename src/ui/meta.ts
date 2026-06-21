@@ -3,10 +3,33 @@
 // the warm-sepia key. The "one more run" surface.
 
 import { THEME } from '../render/theme';
-import { HULLS, hullById } from '../content/hulls';
+import { HULLS, hullById, type HullDef } from '../content/hulls';
 import { WEAPONS } from '../content/weapons';
 import { resonanceById } from '../content/resonances';
 import { type MetaSave, writeSave } from '../meta/save';
+import { drawShip } from '../render/ships';
+
+/** A small canvas preview of a hull — its true in-game silhouette + colour. */
+function shipPreview(hull: HullDef): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  const W = 128, H = 52, dpr = Math.min(2, window.devicePixelRatio || 1);
+  c.width = W * dpr; c.height = H * dpr;
+  c.style.cssText = `width:${W}px;height:${H}px;display:block;margin:0 auto 2px`;
+  const ctx = c.getContext('2d');
+  if (!ctx) return c;
+  ctx.scale(dpr, dpr);
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate(-Math.PI / 2); // nose points up on the card
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 30);
+  g.addColorStop(0, `hsla(${hull.missileHue},90%,62%,0.45)`);
+  g.addColorStop(1, `hsla(${hull.missileHue},90%,55%,0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 30, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  drawShip(ctx, hull, 17);
+  return c;
+}
 
 function hexA(hex: string, a: number): string {
   const h = hex.replace('#', '');
@@ -24,39 +47,50 @@ function overlay(): HTMLDivElement {
   return o;
 }
 
-export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: MetaSave) => void): void {
+export function showHangar(
+  root: HTMLElement,
+  save: MetaSave,
+  onStart: (save: MetaSave) => void,
+  onReset: () => void,
+): void {
   const o = overlay();
+  o.style.gap = '12px';
+  o.style.justifyContent = 'flex-start';
+  o.style.paddingTop = '18px';
 
   const render = (): void => {
     o.innerHTML = '';
+
+    // ── header: logo + tagline + the wallet (with a label of what it's for) ──
     const title = document.createElement('div');
-    title.style.textAlign = 'center';
-    // pixel-art logo if present, else a text wordmark fallback
+    title.style.cssText = 'text-align:center;display:flex;flex-direction:column;align-items:center;gap:1px';
     const logo = document.createElement('img');
     logo.src = 'logo.png';
     logo.alt = 'WHIRL';
-    logo.style.cssText = `display:block;margin:0 auto 2px;image-rendering:pixelated;width:min(440px,72vw);height:auto;filter:drop-shadow(0 0 22px ${hexA(THEME.good, 0.45)})`;
+    logo.style.cssText = `display:block;margin:0 auto;image-rendering:pixelated;width:min(300px,54vw);height:auto;filter:drop-shadow(0 0 18px ${hexA(THEME.good, 0.45)})`;
     logo.onerror = () => {
       const t = document.createElement('div');
-      t.style.cssText = `font-weight:800;font-size:42px;letter-spacing:3px;color:${THEME.good};text-shadow:0 0 24px ${hexA(THEME.good, 0.5)}`;
+      t.style.cssText = `font-weight:800;font-size:38px;letter-spacing:3px;color:${THEME.good};text-shadow:0 0 24px ${hexA(THEME.good, 0.5)}`;
       t.textContent = 'WHIRL';
       logo.replaceWith(t);
     };
     title.appendChild(logo);
     const sub = document.createElement('div');
     sub.innerHTML =
-      `<div style="color:${THEME.inkDim};font-size:14px;margin-top:2px">fall inward · relight the dark</div>` +
-      `<div style="margin-top:14px;font-size:20px;color:${THEME.ember};font-weight:800">✦ ${save.embers} embers</div>`;
+      `<div style="color:${THEME.inkDim};font-size:13px">fall inward · relight the dark</div>` +
+      `<div style="margin-top:8px;font-size:22px;color:${THEME.ember};font-weight:800">✦ ${save.embers.toLocaleString()}</div>` +
+      `<div style="color:${THEME.inkDim};font-size:11px;letter-spacing:1px">EMBERS — earned from kills, spent below to unlock craft &amp; weapons</div>`;
     title.appendChild(sub);
     o.appendChild(title);
 
+    // ── hull picker — each card shows the ship's real silhouette & colour ──
     const subtitle = document.createElement('div');
     subtitle.textContent = 'CHOOSE YOUR HULL';
-    subtitle.style.cssText = `color:${THEME.inkDim};font-size:13px;letter-spacing:2px`;
+    subtitle.style.cssText = `color:${THEME.inkDim};font-size:12px;letter-spacing:2px`;
     o.appendChild(subtitle);
 
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;justify-content:center;max-width:980px';
+    row.style.cssText = 'display:flex;gap:11px;flex-wrap:wrap;justify-content:center;max-width:880px';
     o.appendChild(row);
 
     for (const h of HULLS) {
@@ -65,17 +99,20 @@ export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: Me
       const afford = save.embers >= h.cost;
       const col = selected ? THEME.good : unlocked ? THEME.rarity.rare : THEME.inkDim;
       const card = document.createElement('button');
-      card.style.cssText = `width:180px;min-height:180px;cursor:pointer;text-align:left;border-radius:16px;padding:16px;
+      card.style.cssText = `width:150px;cursor:pointer;text-align:left;border-radius:14px;padding:11px;
         background:linear-gradient(160deg, ${THEME.panel}, ${THEME.bgDeep});border:2.5px solid ${col};color:${THEME.ink};
-        display:flex;flex-direction:column;gap:8px;opacity:${unlocked || afford ? 1 : 0.55};
-        box-shadow:${selected ? `0 0 28px ${hexA(THEME.good, 0.45)}` : '0 8px 24px rgba(0,0,0,.5)'};transition:transform .1s ease`;
-      card.onmouseenter = () => { card.style.transform = 'translateY(-6px) scale(1.04)'; };
+        display:flex;flex-direction:column;gap:5px;opacity:${unlocked || afford ? 1 : 0.55};
+        box-shadow:${selected ? `0 0 24px ${hexA(THEME.good, 0.45)}` : '0 8px 22px rgba(0,0,0,.5)'};transition:transform .1s ease`;
+      card.onmouseenter = () => { card.style.transform = 'translateY(-5px) scale(1.04)'; };
       card.onmouseleave = () => { card.style.transform = 'none'; };
-      card.innerHTML =
-        `<div style="font-size:19px;font-weight:800">${h.name}</div>` +
-        `<div style="font-size:12px;color:${THEME.danger}">${'◆'.repeat(h.plates)}</div>` +
-        `<div style="font-size:12.5px;color:${THEME.inkDim};line-height:1.4;flex:1">${h.blurb}</div>` +
-        `<div style="font-size:12px;font-weight:800;color:${col}">${selected ? '✓ SELECTED' : unlocked ? 'SELECT' : afford ? `UNLOCK ✦${h.cost}` : `✦${h.cost}`}</div>`;
+      card.appendChild(shipPreview(h));
+      const body = document.createElement('div');
+      body.innerHTML =
+        `<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:16px;font-weight:800">${h.name}</span>` +
+        `<span style="font-size:11px;color:${THEME.danger}">${'◆'.repeat(h.plates)}</span></div>` +
+        `<div style="font-size:11.5px;color:${THEME.inkDim};line-height:1.35;margin:3px 0">${h.blurb}</div>` +
+        `<div style="font-size:12px;font-weight:800;color:${col}">${selected ? '✓ SELECTED' : unlocked ? 'SELECT' : afford ? `UNLOCK ✦${h.cost.toLocaleString()}` : `✦${h.cost.toLocaleString()}`}</div>`;
+      card.appendChild(body);
       card.onclick = () => {
         if (selected) return;
         if (unlocked) { save.selectedHull = h.id; }
@@ -89,10 +126,10 @@ export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: Me
     // weapon selector
     const wlabel = document.createElement('div');
     wlabel.textContent = 'WEAPON';
-    wlabel.style.cssText = `color:${THEME.inkDim};font-size:13px;letter-spacing:2px;margin-top:4px`;
+    wlabel.style.cssText = `color:${THEME.inkDim};font-size:12px;letter-spacing:2px;margin-top:2px`;
     o.appendChild(wlabel);
     const wrow = document.createElement('div');
-    wrow.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;justify-content:center;max-width:560px';
+    wrow.style.cssText = 'display:flex;gap:11px;flex-wrap:wrap;justify-content:center;max-width:560px';
     o.appendChild(wrow);
     for (const w of WEAPONS) {
       const unlocked = save.unlockedWeapons.includes(w.id);
@@ -100,13 +137,13 @@ export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: Me
       const afford = save.embers >= w.cost;
       const col = selected ? THEME.tether : unlocked ? THEME.rarity.rare : THEME.inkDim;
       const card = document.createElement('button');
-      card.style.cssText = `width:230px;cursor:pointer;text-align:left;border-radius:12px;padding:11px 14px;
+      card.style.cssText = `width:230px;cursor:pointer;text-align:left;border-radius:12px;padding:9px 13px;
         background:linear-gradient(160deg, ${THEME.panel}, ${THEME.bgDeep});border:2px solid ${col};color:${THEME.ink};
         opacity:${unlocked || afford ? 1 : 0.55};box-shadow:${selected ? `0 0 20px ${hexA(THEME.tether, 0.4)}` : '0 6px 18px rgba(0,0,0,.45)'}`;
       card.innerHTML =
-        `<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:16px;font-weight:800">${w.name}</span>` +
-        `<span style="font-size:11px;font-weight:800;color:${col}">${selected ? '✓' : unlocked ? 'SELECT' : afford ? `✦${w.cost}` : `✦${w.cost}`}</span></div>` +
-        `<div style="font-size:12px;color:${THEME.inkDim};line-height:1.35;margin-top:4px">${w.blurb}</div>`;
+        `<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:15px;font-weight:800">${w.name}</span>` +
+        `<span style="font-size:11px;font-weight:800;color:${col}">${selected ? '✓' : unlocked ? 'SELECT' : `✦${w.cost.toLocaleString()}`}</span></div>` +
+        `<div style="font-size:11.5px;color:${THEME.inkDim};line-height:1.3;margin-top:3px">${w.blurb}</div>`;
       card.onclick = () => {
         if (selected) return;
         if (unlocked) { save.selectedWeapon = w.id; }
@@ -117,44 +154,40 @@ export function showHangar(root: HTMLElement, save: MetaSave, onStart: (save: Me
       wrow.appendChild(card);
     }
 
-    // ascension control
-    const asc = document.createElement('div');
-    asc.style.cssText = 'display:flex;align-items:center;gap:14px;margin-top:6px';
-    const mk = (label: string, fn: () => void): HTMLButtonElement => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.style.cssText = `width:34px;height:34px;border-radius:10px;border:2px solid ${THEME.panelBorder};background:${THEME.panel};color:${THEME.ink};font:700 18px ${FONT};cursor:pointer`;
-      b.onclick = fn; return b;
-    };
-    asc.appendChild(mk('−', () => { save.pact = Math.max(0, save.pact - 1); writeSave(save); render(); }));
-    const ascLabel = document.createElement('div');
-    ascLabel.style.cssText = `min-width:230px;text-align:center;color:${THEME.inkDim};font-size:13px`;
-    ascLabel.innerHTML = `<b style="color:${THEME.ink}">ASCENSION ${save.pact}</b><br>deeper start · denser hazards · +${save.pact * 25}% embers`;
-    asc.appendChild(ascLabel);
-    asc.appendChild(mk('+', () => { save.pact = Math.min(6, save.pact + 1); writeSave(save); render(); }));
-    o.appendChild(asc);
-
     const start = document.createElement('button');
     start.textContent = '▶  LAUNCH';
-    start.style.cssText = `margin-top:8px;padding:14px 48px;border-radius:14px;border:none;cursor:pointer;
-      background:linear-gradient(160deg, ${THEME.good}, ${THEME.ember});color:#1a0e02;font:800 22px ${FONT};letter-spacing:1px;
-      box-shadow:0 0 30px ${hexA(THEME.good, 0.5)}`;
+    start.style.cssText = `margin-top:4px;padding:12px 46px;border-radius:14px;border:none;cursor:pointer;
+      background:linear-gradient(160deg, ${THEME.good}, ${THEME.ember});color:#1a0e02;font:800 21px ${FONT};letter-spacing:1px;
+      box-shadow:0 0 28px ${hexA(THEME.good, 0.5)}`;
     start.onclick = () => { o.remove(); onStart(save); };
     o.appendChild(start);
 
-    if (save.highScores.length) {
-      const board = document.createElement('div');
-      board.style.cssText = `${panelCss()};padding:10px 26px;margin-top:6px;display:flex;gap:26px;align-items:center`;
-      board.innerHTML = `<span style="font-size:11px;letter-spacing:2px;color:${THEME.inkDim}">BEST</span>` +
-        save.highScores.slice(0, 3).map((s, i) => `<span style="font:800 16px ${FONT};color:${i === 0 ? THEME.charge : THEME.ink}">${s.toLocaleString()}</span>`).join('');
-      o.appendChild(board);
-    }
-    if (save.stats.runs > 0) {
-      const stats = document.createElement('div');
-      stats.style.cssText = `color:${THEME.inkDim};font-size:12px;margin-top:2px`;
-      stats.textContent = `runs ${save.stats.runs} · deepest sector ${save.stats.deepest + 1} · worlds relit ${save.stats.relit}`;
-      o.appendChild(stats);
-    }
+    // ── stats footer: high score + run tallies, each clearly labelled ──
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:stretch';
+    const statBox = (label: string, value: string, accent = THEME.ink): string =>
+      `<div style="${panelCss()};padding:7px 18px;text-align:center;min-width:96px">` +
+        `<div style="font:800 18px ${FONT};color:${accent}">${value}</div>` +
+        `<div style="font-size:10px;letter-spacing:1.5px;color:${THEME.inkDim};margin-top:1px">${label}</div></div>`;
+    const best = save.highScores[0] ?? 0;
+    footer.innerHTML =
+      statBox('HIGH SCORE', best.toLocaleString(), THEME.charge) +
+      statBox('RUNS PLAYED', String(save.stats.runs)) +
+      statBox('DEEPEST SECTOR', String(save.stats.deepest + 1)) +
+      statBox('WORLDS RELIT', String(save.stats.relit));
+    o.appendChild(footer);
+
+    // ── reset progress (guarded by a confirm) ──
+    const reset = document.createElement('button');
+    reset.textContent = 'reset all progress';
+    reset.style.cssText = `margin-top:2px;background:none;border:none;cursor:pointer;color:${hexA(THEME.danger, 0.7)};
+      font:600 12px ${FONT};text-decoration:underline;letter-spacing:.5px`;
+    let armed = false;
+    reset.onclick = () => {
+      if (!armed) { armed = true; reset.textContent = 'tap again to wipe everything — embers, unlocks, scores'; reset.style.color = THEME.danger; return; }
+      onReset();
+    };
+    o.appendChild(reset);
   };
 
   render();

@@ -14,13 +14,14 @@ import type { Body, CraftState } from '../core/types';
 export interface Enemy {
   id: number; pos: Vec2; vel: Vec2; hp: number; maxHp: number;
   r: number; bounty: number; standoff: number; speed: number; burst: number;
-  cd: number; phase: number; kind: 'drone' | 'hulk';
+  cd: number; phase: number; kind: 'drone' | 'hulk' | 'spreader'; hue: number;
 }
 export interface Missile {
   pos: Vec2; vel: Vec2; owner: 'player' | 'enemy'; life: number;
   accel: number; maxSpeed: number; turn: number; // flight characteristics
   dmg: number;
   pierce: number; // extra drones it can punch through after a kill
+  hue: number;    // trail/flame colour
   trail: Vec2[];
 }
 
@@ -41,6 +42,7 @@ export class Combat {
   /** Drafted combat upgrades, refreshed when Resonances change. */
   upgrades = { cooldown: PLAYER_COOLDOWN, shots: 1, dmg: 1, pierce: 0 };
   frozen = false; // Time Stop — enemies hold still and don't fire
+  playerHue = 185; // player missile colour (set per hull each run)
   private clock = 0;
   private nid = 1;
   // reinforcements: the longer you linger in a field, the faster they arrive
@@ -58,11 +60,17 @@ export class Combat {
   }
 
   private makeEnemy(pos: Vec2, depth: number, rnd: () => number): Enemy {
-    const hulkChance = depth >= 2 ? Math.min(0.45, (depth - 1) * 0.14) : 0;
-    const hulk = rnd() < hulkChance;
-    return hulk
-      ? { id: this.nid++, pos: { ...pos }, vel: v(0, 0), hp: 4, maxHp: 4, r: 24, bounty: 120, standoff: 560, speed: 60, burst: 2, cd: 2.5 + rnd() * 2.5, phase: rnd() * 6.28, kind: 'hulk' }
-      : { id: this.nid++, pos: { ...pos }, vel: v(0, 0), hp: 1, maxHp: 1, r: 11, bounty: 35, standoff: 480, speed: 95, burst: 1, cd: 2 + rnd() * 2.5, phase: rnd() * 6.28, kind: 'drone' };
+    const base = { id: this.nid++, pos: { ...pos }, vel: v(0, 0), phase: rnd() * 6.28 };
+    // Spreaders — fire 4 ways, appear from sector 5 (depth >= 4)
+    if (depth >= 4 && rnd() < Math.min(0.32, (depth - 3) * 0.12)) {
+      return { ...base, hp: 2, maxHp: 2, r: 18, bounty: 85, standoff: 540, speed: 48, burst: 4, cd: 3 + rnd() * 2, kind: 'spreader', hue: 265 };
+    }
+    // Hulks — big, tanky, twin-fire, from sector 3 (depth >= 2)
+    if (depth >= 2 && rnd() < Math.min(0.45, (depth - 1) * 0.14)) {
+      return { ...base, hp: 4, maxHp: 4, r: 24, bounty: 120, standoff: 560, speed: 60, burst: 2, cd: 2.5 + rnd() * 2.5, kind: 'hulk', hue: 325 };
+    }
+    // Drones — light, fast, single-fire
+    return { ...base, hp: 1, maxHp: 1, r: 11, bounty: 35, standoff: 480, speed: 95, burst: 1, cd: 2 + rnd() * 2.5, kind: 'drone', hue: 350 };
   }
 
   spawn(seed: string | number, count: number, bounds: { min: Vec2; max: Vec2 }, craftPos: Vec2, depth = 0): void {
@@ -135,7 +143,7 @@ export class Combat {
       this.missiles.push({
         pos: nose, vel: launch, owner: 'player', life: 2.6,
         accel: wpn.accel, maxSpeed: wpn.maxSpeed, turn: wpn.seeker ? 6.5 : 0,
-        dmg: this.upgrades.dmg, pierce: this.upgrades.pierce, trail: [],
+        dmg: this.upgrades.dmg, pierce: this.upgrades.pierce, hue: this.playerHue, trail: [],
       });
     }
     bus.post({ type: 'missileFire', owner: 'player', at: { ...craft.pos } });
@@ -168,13 +176,16 @@ export class Combat {
       e.cd -= dt;
       if (e.cd <= 0 && craft.alive && d < 860) {
         e.cd = 3.4; // fire less often
-        // launch a burst with a wide aim error so they're easy to dodge — not snipers
         const baseA = Math.atan2(dir.y, dir.x);
         for (let s = 0; s < e.burst; s++) {
-          const la = baseA + (Math.random() - 0.5) * 0.7 + (e.burst > 1 ? (s - (e.burst - 1) / 2) * 0.22 : 0);
+          // spreaders fire evenly in all directions (rotating); others aim with a
+          // wide error so they're easy to dodge — not snipers
+          const la = e.kind === 'spreader'
+            ? this.clock * 0.6 + (s / e.burst) * Math.PI * 2
+            : baseA + (Math.random() - 0.5) * 0.7 + (e.burst > 1 ? (s - (e.burst - 1) / 2) * 0.22 : 0);
           this.missiles.push({
             pos: { ...e.pos }, vel: v(Math.cos(la) * 140, Math.sin(la) * 140), owner: 'enemy', life: 3.4,
-            accel: 300, maxSpeed: 290, turn: 1.4, dmg: 1, pierce: 0, trail: [], // slow + lazy turning
+            accel: 300, maxSpeed: 290, turn: e.kind === 'spreader' ? 0 : 1.4, dmg: 1, pierce: 0, hue: e.hue, trail: [],
           });
         }
         bus.post({ type: 'missileFire', owner: 'enemy', at: { ...e.pos } });
@@ -193,9 +204,11 @@ export class Combat {
         const desired = Math.atan2(target.pos.y - ms.pos.y, target.pos.x - ms.pos.x);
         ang += Math.max(-ms.turn * dt, Math.min(ms.turn * dt, wrapAngle(desired - ang)));
       }
-      // self-thrust along heading + amplified PLANET GRAVITY — missiles whip
-      // around worlds and get slung hard near black holes
-      ms.vel = add(ms.vel, scale(v(Math.cos(ang), Math.sin(ang)), ms.accel * dt));
+      // homing redirects the velocity toward the (steered) heading so seekers
+      // actually chase; unguided keep their heading and only bend under gravity.
+      const speed = Math.min(ms.maxSpeed, len(ms.vel) + ms.accel * dt);
+      ms.vel = v(Math.cos(ang) * speed, Math.sin(ang) * speed);
+      // amplified PLANET GRAVITY still whips them around worlds / black holes
       ms.vel = add(ms.vel, scale(gravityAt(ms.pos), MISSILE_GRAV * dt));
       const sp = len(ms.vel);
       if (sp > ms.maxSpeed) ms.vel = scale(ms.vel, ms.maxSpeed / sp);

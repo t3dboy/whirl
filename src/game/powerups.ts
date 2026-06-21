@@ -4,38 +4,50 @@
 // each buff's strength + duration, and a Drop Chance that controls how often
 // they spawn. (Multiplier/DropChance are raised by Resonances + meta.)
 
-import { type Vec2, dist } from '../core/math';
+import { type Vec2, v, add, sub, scale, norm, len, dist } from '../core/math';
 import { EventBus } from '../core/events';
 
 export type PType = 'repair' | 'magnet' | 'speed' | 'overdrive' | 'bounty' | 'shield' | 'timestop' | 'nuke';
 
 export interface PowerupDef {
-  type: PType; name: string; hue: number; glyph: string; duration: number; instant: boolean;
+  type: PType; name: string; hue: number; glyph: string; duration: number; instant: boolean; blurb: string;
 }
 
 export const POWERUPS: Record<PType, PowerupDef> = {
-  repair:    { type: 'repair',    name: 'Repair',     hue: 140, glyph: '+',  duration: 0,  instant: true },
-  magnet:    { type: 'magnet',    name: 'Collector',  hue: 285, glyph: '◎',  duration: 0,  instant: true },
-  speed:     { type: 'speed',     name: 'Thrust',     hue: 190, glyph: '»',  duration: 15, instant: false },
-  overdrive: { type: 'overdrive', name: 'Overdrive',  hue: 28,  glyph: '✶',  duration: 15, instant: false },
-  bounty:    { type: 'bounty',    name: 'Bounty',     hue: 48,  glyph: '$',  duration: 15, instant: false },
-  shield:    { type: 'shield',    name: 'Invuln',     hue: 185, glyph: '✪',  duration: 15, instant: false },
-  timestop:  { type: 'timestop',  name: 'Time Stop',  hue: 210, glyph: '⏱',  duration: 12, instant: false },
-  nuke:      { type: 'nuke',      name: 'Nuke',       hue: 0,   glyph: '✺',  duration: 0,  instant: true },
+  repair:    { type: 'repair',    name: 'Repair',     hue: 140, glyph: '+',  duration: 0,  instant: true,  blurb: 'Patches up a chunk of your hull plating on the spot.' },
+  magnet:    { type: 'magnet',    name: 'Collector',  hue: 285, glyph: '◎',  duration: 0,  instant: true,  blurb: 'Instantly sucks in every relic and dropped orb in the field.' },
+  speed:     { type: 'speed',     name: 'Thrust',     hue: 190, glyph: '»',  duration: 15, instant: false, blurb: 'Supercharges your engines for faster flight, briefly.' },
+  overdrive: { type: 'overdrive', name: 'Overdrive',  hue: 28,  glyph: '✶',  duration: 15, instant: false, blurb: 'Your missiles fire faster and hit harder for a while.' },
+  bounty:    { type: 'bounty',    name: 'Bounty',     hue: 48,  glyph: '$',  duration: 15, instant: false, blurb: 'Every kill pays out bonus charge while it lasts.' },
+  shield:    { type: 'shield',    name: 'Invuln',     hue: 185, glyph: '✪',  duration: 15, instant: false, blurb: 'A shield soaks all damage — fly fearless for a while.' },
+  timestop:  { type: 'timestop',  name: 'Time Stop',  hue: 210, glyph: '⏱',  duration: 12, instant: false, blurb: 'Freezes hostiles in place — and you take no hits.' },
+  nuke:      { type: 'nuke',      name: 'Nuke',       hue: 0,   glyph: '✺',  duration: 0,  instant: true,  blurb: 'Detonates a shockwave that wipes out nearby enemies.' },
 };
 const TYPES = Object.keys(POWERUPS) as PType[];
-const PICKUP_R = 28;
+const PICKUP_R = 52;        // generous — fly near, not dead-on, to grab
+const MOTE_MAGNET_R = 460;  // embers get sucked toward you from this far
+const MOTE_COLLECT_R = 34;
 
 export interface DroppedPowerup { id: number; type: PType; x: number; y: number; }
+export interface EmberMote { x: number; y: number; vx: number; vy: number; }
 
 export class Powerups {
   dropped: DroppedPowerup[] = [];
+  motes: EmberMote[] = [];      // dropped embers, magnetised to the craft
   active: Partial<Record<PType, number>> = {}; // type → seconds remaining
   mult = 1;
   dropChance = 0.18;
   private nid = 1;
 
-  reset(): void { this.dropped = []; this.active = {}; }
+  reset(): void { this.dropped = []; this.motes = []; this.active = {}; }
+
+  /** Scatter a few ember motes from a kill — they home in on the craft. */
+  dropEmbers(x: number, y: number, n: number): void {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, s = 40 + Math.random() * 90;
+      this.motes.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s });
+    }
+  }
 
   /** Roll for a drop at a position (called on enemy death). */
   maybeDrop(x: number, y: number, bus: EventBus): void {
@@ -66,6 +78,23 @@ export class Powerups {
           this.dropped.splice(i, 1);
           this.fire(d.type, { x: d.x, y: d.y }, bus);
         }
+      }
+    }
+    // ember motes: drift, then accelerate toward the craft and get collected
+    for (let i = this.motes.length - 1; i >= 0; i--) {
+      const m = this.motes[i];
+      const to = sub(craftPos, { x: m.x, y: m.y });
+      const d = len(to) || 1;
+      if (alive && d < MOTE_MAGNET_R) {
+        const pull = (1 - d / MOTE_MAGNET_R) * 2400; // stronger the closer it gets
+        const dir = scale(to, 1 / d);
+        m.vx += dir.x * pull * dt; m.vy += dir.y * pull * dt;
+      }
+      m.vx *= Math.pow(0.12, dt); m.vy *= Math.pow(0.12, dt); // drag so they settle into the pull
+      m.x += m.vx * dt; m.y += m.vy * dt;
+      if (alive && d < MOTE_COLLECT_R) {
+        this.motes.splice(i, 1);
+        bus.post({ type: 'emberGet', amount: 1, at: { x: m.x, y: m.y } });
       }
     }
     // tick active buffs
