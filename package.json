@@ -1,6 +1,6 @@
 {
   "name": "t3d-whirl",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Whirl — a gravity roguelite. Fall inward, relight the dark.",
