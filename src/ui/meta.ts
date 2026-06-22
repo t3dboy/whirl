@@ -4,7 +4,7 @@
 
 import { THEME } from '../render/theme';
 import { HULLS, hullById, type HullDef } from '../content/hulls';
-import { WEAPONS } from '../content/weapons';
+import { WEAPONS, FLAME_MAX_LEVEL, FLAME_TITLES, flameStats, flameLevelCost } from '../content/weapons';
 import { resonanceById } from '../content/resonances';
 import { type MetaSave, writeSave } from '../meta/save';
 import { drawShip } from '../render/ships';
@@ -45,6 +45,76 @@ function overlay(): HTMLDivElement {
     background:radial-gradient(circle at 50% 35%, ${hexA(THEME.bg, 0.95)}, ${hexA(THEME.bgDeep, 0.995)});
     font-family:${FONT};color:${THEME.ink};animation:wfade .25s ease;overflow:auto;padding:28px`;
   return o;
+}
+
+// The Flame Halo weapon card — unlock it, EQUIP it, and LEVEL IT UP. Distinct
+// from the simple missile cards because it carries an upgrade track.
+function flameCard(save: MetaSave, rerender: () => void): HTMLElement {
+  const lvl = save.flameLevel;
+  const unlocked = lvl >= 1;
+  const selected = save.selectedWeapon === 'flame';
+  const fiery = '#ff7a1f';
+  const col = selected ? fiery : unlocked ? THEME.ember : THEME.inkDim;
+  const card = document.createElement('div');
+  card.style.cssText = `width:230px;text-align:left;border-radius:12px;padding:9px 13px;
+    background:linear-gradient(160deg, ${THEME.panel}, ${THEME.bgDeep});border:2px solid ${col};color:${THEME.ink};
+    display:flex;flex-direction:column;gap:5px;box-shadow:${selected ? `0 0 22px ${hexA(fiery, 0.45)}` : '0 6px 18px rgba(0,0,0,.45)'}`;
+
+  const fs = unlocked ? flameStats(lvl) : null;
+  const badge = unlocked ? `Lv ${lvl} · ${FLAME_TITLES[lvl - 1]}` : `✦${flameLevelCost(1).toLocaleString()}`;
+  const desc = fs
+    ? `${fs.jets} jet${fs.jets > 1 ? 's' : ''} · reach ${fs.reach} · spin ${fs.spin.toFixed(1)} · ${fs.dmg.toFixed(1)} dmg/s`
+    : 'A jet of fire that whirls around your hull, burning all it sweeps.';
+  const head = document.createElement('div');
+  head.innerHTML =
+    `<div style="display:flex;justify-content:space-between;align-items:center">` +
+      `<span style="font-size:15px;font-weight:800">🔥 Flame Halo</span>` +
+      `<span style="font-size:11px;font-weight:800;color:${col}">${badge}</span></div>` +
+    `<div style="font-size:11.5px;color:${THEME.inkDim};line-height:1.3;margin-top:3px">${desc}</div>`;
+  card.appendChild(head);
+
+  if (unlocked) {
+    const pips = document.createElement('div');
+    pips.style.cssText = 'display:flex;gap:3px;margin-top:1px';
+    pips.innerHTML = Array.from({ length: FLAME_MAX_LEVEL }, (_, i) =>
+      `<span style="flex:1;height:4px;border-radius:2px;background:${i < lvl ? fiery : hexA(THEME.inkDim, 0.3)}"></span>`).join('');
+    card.appendChild(pips);
+  }
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:6px;margin-top:2px';
+  const mkBtn = (label: string, enabled: boolean, on: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.textContent = label; b.disabled = !enabled;
+    b.style.cssText = `flex:1;cursor:${enabled ? 'pointer' : 'default'};border-radius:8px;padding:6px 4px;font:800 11px ${FONT};
+      border:1.5px solid ${enabled ? col : hexA(THEME.inkDim, 0.4)};background:${hexA(THEME.panel, 0.6)};
+      color:${enabled ? THEME.ink : THEME.inkDim};opacity:${enabled ? 1 : 0.6}`;
+    if (enabled) b.onclick = on;
+    return b;
+  };
+
+  if (unlocked) {
+    actions.appendChild(mkBtn(selected ? '✓ EQUIPPED' : 'EQUIP', !selected, () => {
+      save.selectedWeapon = 'flame'; writeSave(save); rerender();
+    }));
+  }
+  if (lvl === 0) {
+    const cost = flameLevelCost(1); const afford = save.embers >= cost;
+    actions.appendChild(mkBtn(`UNLOCK ✦${cost.toLocaleString()}`, afford, () => {
+      save.embers -= cost; save.flameLevel = 1;
+      if (!save.unlockedWeapons.includes('flame')) save.unlockedWeapons.push('flame');
+      save.selectedWeapon = 'flame'; writeSave(save); rerender();
+    }));
+  } else if (lvl < FLAME_MAX_LEVEL) {
+    const cost = flameLevelCost(lvl + 1); const afford = save.embers >= cost;
+    actions.appendChild(mkBtn(`LEVEL UP ✦${cost.toLocaleString()}`, afford, () => {
+      save.embers -= cost; save.flameLevel += 1; writeSave(save); rerender();
+    }));
+  } else {
+    actions.appendChild(mkBtn('★ MAX LEVEL', false, () => {}));
+  }
+  card.appendChild(actions);
+  return card;
 }
 
 export function showHangar(
@@ -132,6 +202,7 @@ export function showHangar(
     wrow.style.cssText = 'display:flex;gap:11px;flex-wrap:wrap;justify-content:center;max-width:560px';
     o.appendChild(wrow);
     for (const w of WEAPONS) {
+      if (w.kind === 'flame') { wrow.appendChild(flameCard(save, render)); continue; }
       const unlocked = save.unlockedWeapons.includes(w.id);
       const selected = save.selectedWeapon === w.id;
       const afford = save.embers >= w.cost;

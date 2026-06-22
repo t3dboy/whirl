@@ -8,6 +8,7 @@ export interface MetaSave {
   selectedHull: string;
   unlockedWeapons: string[];
   selectedWeapon: string;
+  flameLevel: number;           // Flame Halo upgrade level (0 = not yet unlocked)
   pact: number;                 // ascension level (opt-in difficulty)
   carried: string | null;       // one Resonance id carried into the next run
   highScores: number[];         // top scores, descending
@@ -24,6 +25,7 @@ export function defaultSave(): MetaSave {
     selectedHull: 'seedling',
     unlockedWeapons: ['unguided'],
     selectedWeapon: 'unguided',
+    flameLevel: 0,
     pact: 0,
     carried: null,
     highScores: [],

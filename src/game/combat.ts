@@ -10,6 +10,7 @@ import { type Vec2, v, add, sub, scale, norm, len, dist, wrapAngle } from '../co
 import { EventBus } from '../core/events';
 import { RNG } from '../core/rng';
 import type { Body, CraftState } from '../core/types';
+import { arsenalById, type ArsenalWeapon, type ArsenalCtx, type FxPrim, type ProjectileSpec } from '../content/arsenal';
 
 export interface Enemy {
   id: number; pos: Vec2; vel: Vec2; hp: number; maxHp: number;
@@ -23,6 +24,9 @@ export interface Missile {
   pierce: number; // extra drones it can punch through after a kill
   hue: number;    // trail/flame colour
   trail: Vec2[];
+  explodeRadius?: number; // arsenal: AoE on death
+  ricochet?: number;      // arsenal: bounces (future)
+  radius?: number;        // arsenal: collision radius override
 }
 
 const MISSILE_R = 6;
@@ -43,6 +47,15 @@ export class Combat {
   upgrades = { cooldown: PLAYER_COOLDOWN, shots: 1, dmg: 1, pierce: 0 };
   frozen = false; // Time Stop — enemies hold still and don't fire
   playerHue = 185; // player missile colour (set per hull each run)
+  /** Flame Halo state when the flamethrower is equipped (else null). angle sweeps,
+   *  swoop is how far the spray trails behind the nozzle as it whirls. */
+  flame: { reach: number; jets: number; spin: number; dmg: number; angle: number; swoop: number } | null = null;
+  flameDmgMul = 1; // overdrive etc. scale the burn (set from main each frame)
+  // ── collected in-run arsenal (auto-weapons) + their transient effects ──
+  arsenal: { w: ArsenalWeapon; level: number; state: Record<string, number> }[] = [];
+  fx: FxPrim[] = [];
+  mines: { x: number; y: number; dmg: number; radius: number; life: number; arm: number; hue: number }[] = [];
+  hpFrac = 1; // craft hull fraction (set from main; used by some arsenal weapons)
   private clock = 0;
   private nid = 1;
   // reinforcements: the longer you linger in a field, the faster they arrive
@@ -52,7 +65,80 @@ export class Combat {
   private spawnDepth = 0;
   private static MAX_ALIVE = 24;
 
-  reset(): void { this.enemies = []; this.missiles = []; this.playerCd = 0; }
+  reset(): void { this.enemies = []; this.missiles = []; this.playerCd = 0; this.fx = []; this.mines = []; }
+
+  /** Rebuild the live arsenal from the run loadout, preserving per-weapon state by id. */
+  setArsenal(loadout: { id: string; level: number }[]): void {
+    const prev = new Map(this.arsenal.map((a) => [a.w.id, a]));
+    this.arsenal = [];
+    for (const e of loadout) {
+      const w = arsenalById(e.id);
+      if (w) this.arsenal.push({ w, level: e.level, state: prev.get(e.id)?.state ?? {} });
+    }
+  }
+
+  private tickArsenal(dt: number, craft: CraftState, bus: EventBus): void {
+    for (const inst of this.arsenal) {
+      const ctx: ArsenalCtx = {
+        dt, t: this.clock, level: inst.level, rng: Math.random,
+        craft: { pos: craft.pos, vel: craft.vel, heading: craft.heading, hpFrac: this.hpFrac },
+        enemies: this.enemies,
+        state: inst.state,
+        nearestEnemy: (from, maxDist = Infinity, exclude) => {
+          let best: Enemy | null = null, bd = Infinity;
+          for (const e of this.enemies) {
+            if (exclude && exclude.has(e.id)) continue;
+            const d = dist(from, e.pos);
+            if (d < bd && d <= maxDist) { bd = d; best = e; }
+          }
+          return best;
+        },
+        enemiesInRadius: (c, r) => this.enemies.filter((e) => dist(c, e.pos) < r + e.r),
+        enemiesInArc: (c, facing, half, r) => this.enemies.filter((e) => {
+          const d = dist(c, e.pos); if (d > r + e.r) return false;
+          return Math.abs(wrapAngle(Math.atan2(e.pos.y - c.y, e.pos.x - c.x) - facing)) <= half;
+        }),
+        damage: (e, amt) => {
+          const en = e as Enemy; en.hp -= amt;
+          if (Math.random() < 0.18) bus.post({ type: 'enemyHit', at: { ...en.pos } });
+          if (en.hp <= 0) { this.enemies = this.enemies.filter((x) => x !== en); bus.post({ type: 'enemyDown', at: { ...en.pos }, charge: en.bounty }); }
+        },
+        spawnProjectile: (spec) => this.spawnArsenalProjectile(spec),
+        spawnMine: (x, y, o) => { this.mines.push({ x, y, dmg: o.dmg, radius: o.radius, life: o.life, arm: o.armTime, hue: o.hue }); },
+        fx: (p) => { if (this.fx.length < 240) this.fx.push(p); },
+      };
+      inst.w.tick(ctx);
+    }
+  }
+
+  private spawnArsenalProjectile(spec: ProjectileSpec): void {
+    const vlen = len(spec.vel) || 1;
+    this.missiles.push({
+      pos: { ...spec.pos }, vel: { ...spec.vel }, owner: 'player', life: spec.life,
+      accel: spec.accel ?? 0, maxSpeed: spec.maxSpeed ?? Math.max(vlen, 1),
+      turn: spec.homing ?? 0, dmg: spec.dmg, pierce: spec.pierce ?? 0, hue: spec.hue, trail: [],
+      explodeRadius: spec.explodeRadius, ricochet: spec.ricochet, radius: spec.radius,
+    });
+  }
+
+  private updateMines(dt: number, bus: EventBus): void {
+    for (let i = this.mines.length - 1; i >= 0; i--) {
+      const m = this.mines[i];
+      m.life -= dt; if (m.arm > 0) m.arm -= dt;
+      let det = m.life <= 0;
+      if (!det && m.arm <= 0) for (const e of this.enemies) { if (dist({ x: m.x, y: m.y }, e.pos) < m.radius) { det = true; break; } }
+      if (!det) continue;
+      for (const e of this.enemies.slice()) {
+        if (dist({ x: m.x, y: m.y }, e.pos) < m.radius + e.r) {
+          e.hp -= m.dmg; bus.post({ type: 'enemyHit', at: { ...e.pos } });
+          if (e.hp <= 0) { this.enemies = this.enemies.filter((x) => x !== e); bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty }); }
+        }
+      }
+      if (this.fx.length < 240) this.fx.push({ kind: 'blast', x: m.x, y: m.y, r: m.radius, hue: m.hue, life: 0.4, max: 0.4 });
+      bus.post({ type: 'missileExplode', at: { x: m.x, y: m.y } });
+      this.mines.splice(i, 1);
+    }
+  }
 
   /** How many drones a sector should hold — a real swarm that grows as you fall. */
   static countFor(depth: number, pact: number): number {
@@ -127,7 +213,52 @@ export class Combat {
    * so you aim by pointing the ship. Unguided slugs keep flying straight (lead
    * your shots); seekers launch forward, then curve onto the nearest enemy.
    */
+  /**
+   * Flame Halo — the jets sweep around the craft and burn anything inside a jet
+   * cone within reach. Damage is continuous (per-second), so enemy hp ticks down
+   * as the fire washes over them; enemy missiles caught in the flame are snuffed.
+   */
+  private static FLAME_HALF = 0.4; // jet cone half-angle (radians)
+  private tickFlame(dt: number, craft: CraftState, bus: EventBus): void {
+    const f = this.flame;
+    if (!f || !craft.alive) return;
+    f.angle = wrapAngle(f.angle + f.spin * dt);
+    const burn = f.dmg * this.flameDmgMul * dt;
+    // The spray trails behind the nozzle as it whirls: fire at distance fraction
+    // t lags the current angle by swoop·t, so damage follows the same swooping
+    // curve you see drawn.
+    const inJet = (dx: number, dy: number, extra: number): boolean => {
+      const d = Math.hypot(dx, dy);
+      if (d > f.reach + extra) return false;
+      if (d < 8) return true;
+      const t = Math.min(1, d / f.reach);
+      const ang = Math.atan2(dy, dx);
+      for (let j = 0; j < f.jets; j++) {
+        const at = f.angle + (j / f.jets) * Math.PI * 2 - f.swoop * t; // trailing curve
+        if (Math.abs(wrapAngle(ang - at)) < Combat.FLAME_HALF) return true;
+      }
+      return false;
+    };
+    for (const e of this.enemies.slice()) {
+      if (!inJet(e.pos.x - craft.pos.x, e.pos.y - craft.pos.y, e.r)) continue;
+      e.hp -= burn;
+      if (Math.random() < 0.35) bus.post({ type: 'enemyHit', at: { ...e.pos } });
+      if (e.hp <= 0) {
+        this.enemies = this.enemies.filter((x) => x !== e);
+        bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty });
+      }
+    }
+    // snuff enemy missiles that drift into the fire
+    for (const ms of this.missiles) {
+      if (ms.owner !== 'enemy' || ms.life <= 0) continue;
+      if (inJet(ms.pos.x - craft.pos.x, ms.pos.y - craft.pos.y, MISSILE_R)) {
+        ms.life = 0; bus.post({ type: 'enemyHit', at: { ...ms.pos } });
+      }
+    }
+  }
+
   firePlayer(craft: CraftState, bus: EventBus): boolean {
+    if (this.flame) return false; // the flamethrower has no manual fire — it always burns
     if (this.playerCd > 0 || !craft.alive) return false;
     this.playerCd = this.upgrades.cooldown;
     const wpn = this.playerWeapon;
@@ -153,6 +284,7 @@ export class Combat {
   update(dt: number, craft: CraftState, bodies: Body[], gravityAt: (p: Vec2) => Vec2, bus: EventBus): void {
     this.clock += dt;
     if (this.playerCd > 0) this.playerCd -= dt;
+    if (this.flame) this.tickFlame(dt, craft, bus);
 
     // reinforcements: waves arrive ever faster the longer you linger — danger
     // ramps so dawdling for score is a real gamble.
@@ -192,6 +324,11 @@ export class Combat {
       }
     }
 
+    // ── collected arsenal weapons fire, mines tick, transient fx age ──
+    if (this.arsenal.length && craft.alive) this.tickArsenal(dt, craft, bus);
+    this.updateMines(dt, bus);
+    for (let i = this.fx.length - 1; i >= 0; i--) { this.fx[i].life -= dt; if (this.fx[i].life <= 0) this.fx.splice(i, 1); }
+
     // ── missiles: accelerate + turn-limited homing, leave a trail ──
     for (let i = this.missiles.length - 1; i >= 0; i--) {
       const ms = this.missiles[i];
@@ -221,7 +358,7 @@ export class Combat {
       if (!dead) for (const b of bodies) { if (dist(ms.pos, b.pos) <= b.radius) { dead = true; break; } }
       if (!dead && ms.owner === 'player') {
         for (const e of this.enemies) {
-          if (dist(ms.pos, e.pos) < e.r + MISSILE_R + 4) {
+          if (dist(ms.pos, e.pos) < e.r + (ms.radius ?? MISSILE_R) + 4) {
             e.hp -= ms.dmg; bus.post({ type: 'enemyHit', at: { ...ms.pos } });
             if (e.hp <= 0) { this.enemies = this.enemies.filter((x) => x !== e); bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty }); }
             if (ms.pierce > 0) ms.pierce--;   // punch through to the next drone
@@ -244,7 +381,18 @@ export class Combat {
       if (!dead && ms.owner === 'enemy' && craft.alive && dist(ms.pos, craft.pos) < CRAFT_R + MISSILE_R) {
         dead = true; bus.post({ type: 'plateChipped', remaining: -1, at: { ...ms.pos } });
       }
-      if (dead) { bus.post({ type: 'missileExplode', at: { ...ms.pos } }); this.missiles.splice(i, 1); }
+      if (dead) {
+        if (ms.explodeRadius && ms.owner === 'player') {
+          for (const e of this.enemies.slice()) {
+            if (dist(ms.pos, e.pos) < ms.explodeRadius + e.r) {
+              e.hp -= ms.dmg;
+              if (e.hp <= 0) { this.enemies = this.enemies.filter((x) => x !== e); bus.post({ type: 'enemyDown', at: { ...e.pos }, charge: e.bounty }); }
+            }
+          }
+          if (this.fx.length < 240) this.fx.push({ kind: 'blast', x: ms.pos.x, y: ms.pos.y, r: ms.explodeRadius, hue: ms.hue, life: 0.4, max: 0.4 });
+        }
+        bus.post({ type: 'missileExplode', at: { ...ms.pos } }); this.missiles.splice(i, 1);
+      }
     }
   }
 }

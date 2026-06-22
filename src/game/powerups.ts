@@ -30,16 +30,21 @@ const MOTE_COLLECT_R = 34;
 
 export interface DroppedPowerup { id: number; type: PType; x: number; y: number; }
 export interface EmberMote { x: number; y: number; vx: number; vy: number; }
+export interface WeaponCrate { id: number; x: number; y: number; }
 
 export class Powerups {
   dropped: DroppedPowerup[] = [];
   motes: EmberMote[] = [];      // dropped embers, magnetised to the craft
+  crates: WeaponCrate[] = [];   // rare weapon pickups (grant/upgrade an arsenal weapon)
   active: Partial<Record<PType, number>> = {}; // type → seconds remaining
   mult = 1;
   dropChance = 0.18;
   private nid = 1;
 
-  reset(): void { this.dropped = []; this.motes = []; this.active = {}; }
+  reset(): void { this.dropped = []; this.motes = []; this.crates = []; this.active = {}; }
+
+  /** Drop a weapon crate the craft can fly over to gain/upgrade an arsenal weapon. */
+  spawnCrate(x: number, y: number): void { this.crates.push({ id: this.nid++, x, y }); }
 
   /** Scatter a few ember motes from a kill — they home in on the craft. */
   dropEmbers(x: number, y: number, n: number): void {
@@ -77,6 +82,16 @@ export class Powerups {
         if (dist(craftPos, { x: d.x, y: d.y }) < PICKUP_R) {
           this.dropped.splice(i, 1);
           this.fire(d.type, { x: d.x, y: d.y }, bus);
+        }
+      }
+    }
+    // weapon crates: collected on a generous flyover
+    if (alive) {
+      for (let i = this.crates.length - 1; i >= 0; i--) {
+        const cr = this.crates[i];
+        if (dist(craftPos, { x: cr.x, y: cr.y }) < PICKUP_R) {
+          this.crates.splice(i, 1);
+          bus.post({ type: 'weaponPickup', at: { x: cr.x, y: cr.y } });
         }
       }
     }

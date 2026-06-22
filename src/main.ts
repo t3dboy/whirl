@@ -15,7 +15,8 @@ import { Combat } from './game/combat';
 import { Powerups, POWERUPS, type PType } from './game/powerups';
 import { aggregateMods, draftOffer, resonanceById } from './content/resonances';
 import { hullById } from './content/hulls';
-import { weaponById } from './content/weapons';
+import { weaponById, flameStats } from './content/weapons';
+import { weaponOffers, pickupOffer, MAX_ARSENAL, arsenalById, type WeaponOffer } from './content/arsenal';
 import { loadSave, writeSave, recordScore, resetSave } from './meta/save';
 import { RNG } from './core/rng';
 import { Renderer } from './render/renderer';
@@ -47,6 +48,7 @@ const state = {
   relit: 0, total: countDead(field), goal: field.goal,
   runRelit: 0, // total relit across the whole run (for Embers)
   owned: [] as string[],
+  arsenal: [] as { id: string; level: number }[], // collected run weapons (max 3)
   hullId: save.selectedHull,
   weaponId: save.selectedWeapon,
   phase: 'hangar' as 'hangar' | 'play' | 'draft' | 'over' | 'paused',
@@ -94,6 +96,7 @@ function refreshUpgrades(): void {
     dmg: Math.round(baseUpg.dmg * powerups.damageMul()),
     pierce: baseUpg.pierce,
   };
+  combat.flameDmgMul = powerups.damageMul(); // overdrive stokes the flames too
 }
 function chargeMul(): number { return currentMods().chargeMul ?? 1; }
 function killChargeMul(): number { return currentMods().killChargeMul ?? 1; }
@@ -187,7 +190,7 @@ function updateMarkers(): void {
 function renderHUD(): void {
   const playing = state.phase === 'play';
   hud.style.display = owned.style.display = hint.style.display = pups.style.display = playing ? '' : 'none';
-  fireBtn.style.display = playing && combat.enemies.length > 0 ? '' : 'none';
+  fireBtn.style.display = playing && combat.enemies.length > 0 && !combat.flame ? '' : 'none';
   if (playing) {
     pups.innerHTML = powerups.activeList().map((a) => {
       const d = POWERUPS[a.type]; const frac = Math.max(0, Math.min(1, a.remaining / a.dur));
@@ -218,11 +221,16 @@ function renderHUD(): void {
       ? `<div style="color:${THEME.good};font-weight:800;font-size:12.5px;animation:wpulse 1s infinite">▼ WARP OPEN — dive to the core</div>` +
         `<div style="color:${THEME.charge};font-size:11px;margin-top:2px">…or stay & kill for score (×${state.mult.toFixed(1)})${threat ? ` · <span style="color:${THEME.danger}">${threat} hostile${threat > 1 ? 's' : ''}</span>` : ''}</div>`
       : `<div style="color:${THEME.inkDim};font-size:12px">relight ${state.goal - state.relit} more${threat ? ` · <span style="color:${THEME.danger}">⚠ ${threat} hostile${threat > 1 ? 's' : ''}</span>` : ''}</div>`);
-  owned.innerHTML = state.owned.map((id) => {
+  const arsenalChips = state.arsenal.map((e) => {
+    const w = arsenalById(e.id); if (!w) return '';
+    return `<div style="${PANEL};border-color:rgba(255,154,60,0.85);border-radius:9px;padding:3px 10px;font:800 12px ${FONT_R};color:${THEME.ink}">🔥 ${w.name} <span style="color:#ff9a3c">Lv${e.level}</span></div>`;
+  }).join('');
+  const resonanceChips = state.owned.map((id) => {
     const r = resonanceById(id); if (!r) return '';
     const col = THEME.rarity[r.rarity];
     return `<div style="${PANEL};border-color:${hexA(col, 0.8)};border-radius:9px;padding:3px 10px;font:700 12px ${FONT_R};color:${THEME.ink}">${r.name}</div>`;
   }).join('');
+  owned.innerHTML = arsenalChips + resonanceChips;
 }
 
 // ── input ──
@@ -350,11 +358,21 @@ function beginRun(): void {
   state.hullId = save.selectedHull; state.weaponId = save.selectedWeapon;
   state.relit = 0; state.runRelit = 0; state.total = countDead(field); state.goal = field.goal;
   state.shield = state.maxShield; shieldClock = 0;
+  state.arsenal = []; combat.setArsenal(state.arsenal); // empty arsenal each run
   state.phase = 'play';
   applyMods();
   state.plates = state.maxPlates;
   const wpn = weaponById(state.weaponId);
   combat.playerWeapon = { seeker: wpn.seeker, maxSpeed: wpn.maxSpeed, accel: wpn.accel };
+  // Flame Halo: build the rotating-jet config from the saved upgrade level
+  if (wpn.kind === 'flame' && save.flameLevel >= 1) {
+    const fs = flameStats(save.flameLevel);
+    // how far the spray curls behind the nozzle — faster spin / longer reach swoop more
+    const swoop = Math.min(2.0, (fs.spin * fs.reach) / 520);
+    combat.flame = { reach: fs.reach, jets: fs.jets, spin: fs.spin, dmg: fs.dmg, angle: 0, swoop };
+  } else {
+    combat.flame = null;
+  }
   combat.playerHue = hullById(state.hullId).missileHue; // craft's missile colour
   renderer.hull = hullById(state.hullId);                // distinct silhouette + glow
   world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
@@ -387,13 +405,24 @@ function endRun(won: boolean): void {
   }, won ? 400 : 1100);
 }
 
+/** Apply a chosen weapon offer to the run arsenal (unlock or level-up). */
+function applyWeaponOffer(w: WeaponOffer): void {
+  const existing = state.arsenal.find((e) => e.id === w.id);
+  if (existing) existing.level = w.toLevel;
+  else if (state.arsenal.length < MAX_ARSENAL) state.arsenal.push({ id: w.id, level: w.toLevel });
+  combat.setArsenal(state.arsenal);
+  audio.reignite();
+}
+
 function openDraft(): void {
   state.phase = 'draft';
   const offer = draftOffer(draftRng, state.owned, 3, run.depth);
-  showDraft(uiRoot, offer, {
-    depth: run.depth,
-    onPick: (r) => {
+  const wOffers = weaponOffers(state.arsenal, () => draftRng.next(), 3);
+  showDraft(uiRoot, offer, wOffers, {
+    depth: run.depth, loadoutSize: state.arsenal.length, maxLoadout: MAX_ARSENAL,
+    onConfirm: (r, w) => {
       if (r) { state.owned.push(r.id); applyMods(); audio.pick(); }
+      if (w) applyWeaponOffer(w);
       warpDeeper();
     },
   });
@@ -491,6 +520,8 @@ bus.on((e) => {
       renderer.floatText(e.at, `+${sg}  ×${state.mult.toFixed(1)}`, THEME.rarity.cosmic, 20);
       powerups.maybeDrop(e.at.x, e.at.y, bus); // chance to drop a powerup
       powerups.dropEmbers(e.at.x, e.at.y, 2 + Math.floor(e.charge / 60)); // magnetised embers to collect
+      // rare weapon crate — only if there's a weapon to gain/upgrade
+      if (Math.random() < 0.022 && pickupOffer(state.arsenal, Math.random)) powerups.spawnCrate(e.at.x, e.at.y);
       break;
     }
     case 'enemySpawn':
@@ -505,6 +536,16 @@ bus.on((e) => {
         renderer.floatText(world.craft.pos, `+${emberFloatAcc} ✦`, 'hsl(287,90%,74%)', 14);
         emberFloatAcc = 0;
       }
+      break;
+    }
+    case 'weaponPickup': {
+      const w = pickupOffer(state.arsenal, Math.random);
+      if (!w) break;
+      applyWeaponOffer(w);
+      const label = w.type === 'unlock' ? `${w.weapon.name.toUpperCase()} ACQUIRED` : `${w.weapon.name.toUpperCase()} → Lv ${w.toLevel}`;
+      renderer.showBanner('🔥 ' + label, '#ff9a3c', 3.5);
+      renderer.flash(32, 0.4); renderer.shake(6);
+      renderer.particles.burst(e.at, 26, 32, { speed: 240, life: 0.9, lum: 70 });
       break;
     }
     case 'powerupDrop':
@@ -661,6 +702,7 @@ const loop = new GameLoop(
       powerups.update(dt, world.craft.pos, world.craft.alive, bus);
       world.boost = powerups.speedMul();
       combat.frozen = powerups.frozen();
+      combat.hpFrac = state.maxPlates > 0 ? Math.max(0, Math.min(1, state.plates / state.maxPlates)) : 1;
       refreshUpgrades();
       renderer.invuln = powerups.invincible();
       renderer.invulnBlink = powerups.shieldExpiring();

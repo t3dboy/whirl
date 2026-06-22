@@ -159,7 +159,9 @@ export class Renderer {
     this.drawRelics(s, world.relics, bz);
     if (this.powerups) { this.drawMotes(s, this.powerups); this.drawPowerups(s, this.powerups, bz); }
     this.drawGhost(s, world);
+    if (this.combat?.flame) this.drawFlame(s, world.craft.pos, this.combat.flame, bz);
     if (this.combat) this.drawCombat(s, this.combat, bz);
+    if (this.combat) this.drawArsenalFx(s, this.combat, bz);
     this.particles.draw(s);
     s.restore();
 
@@ -460,6 +462,27 @@ export class Renderer {
       s.textBaseline = 'alphabetic';
       s.restore();
     }
+    // weapon crates — a glowing rotating box with a ✦, clearly different from buffs
+    for (const cr of pu.crates) {
+      const p = this.w2b({ x: cr.x, y: cr.y });
+      const sz = 12 * Math.max(0.7, bz);
+      const spin = this.t * 1.4 + cr.id;
+      const pulse = 0.6 + 0.4 * Math.sin(this.t * 4 + cr.id);
+      s.save();
+      s.globalCompositeOperation = 'lighter';
+      const g = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, sz * 2.6);
+      g.addColorStop(0, hsl(36, 100, 70, 0.6 * pulse)); g.addColorStop(1, hsl(30, 100, 55, 0));
+      s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, sz * 2.6, 0, Math.PI * 2); s.fill();
+      s.restore();
+      s.save();
+      s.translate(p.x, p.y); s.rotate(spin);
+      s.fillStyle = hsl(34, 90, 32); s.strokeStyle = hsl(40, 100, 72); s.lineWidth = 2.5;
+      s.beginPath(); s.rect(-sz, -sz, sz * 2, sz * 2); s.fill(); s.stroke();
+      s.rotate(-spin);
+      s.fillStyle = hsl(45, 100, 90); s.font = `800 ${Math.round(sz * 1.3)}px ui-rounded, system-ui, sans-serif`;
+      s.textAlign = 'center'; s.textBaseline = 'middle'; s.fillText('✦', 0, 1); s.textBaseline = 'alphabetic';
+      s.restore();
+    }
   }
 
   private drawMotes(s: CanvasRenderingContext2D, pu: Powerups): void {
@@ -484,6 +507,135 @@ export class Renderer {
       s.fillStyle = hsl(291, 95, 82); s.fill();
       s.restore();
     }
+  }
+
+  // The Flame Halo — flickering fire jets sweeping around the craft. Drawn in
+  // the scene buffer (additive) so the bloom pass makes the fire glow.
+  private drawFlame(
+    s: CanvasRenderingContext2D,
+    craftPos: Vec2,
+    f: { reach: number; jets: number; spin: number; dmg: number; angle: number; swoop: number },
+    bz: number,
+  ): void {
+    const c = this.w2b(craftPos);
+    const reach = f.reach * bz;
+    const steps = 16;
+    s.save();
+    s.globalCompositeOperation = 'lighter';
+    for (let j = 0; j < f.jets; j++) {
+      const ja = f.angle + (j / f.jets) * Math.PI * 2;
+      // walk out along the swooping curve, dropping soft fiery blobs that grow
+      // thinner, redder and dimmer toward the tip — a sprayed tongue of flame
+      for (let k = 1; k <= steps; k++) {
+        const t = k / steps;
+        const wob = Math.sin(this.t * 16 + j * 3 + k * 0.8) * 0.06 * t; // organic waver
+        const ang = ja - f.swoop * t + wob;
+        const rad = reach * t;
+        const flick = 0.78 + 0.22 * Math.sin(this.t * 22 + j * 2.3 + k * 1.7);
+        const x = c.x + Math.cos(ang) * rad, y = c.y + Math.sin(ang) * rad;
+        const size = reach * (0.22 * (1 - t) + 0.05) * (0.85 + 0.45 * flick);
+        const hue = 52 - t * 44;            // yellow core → deep red tip
+        const lum = 64 - t * 24;
+        const alpha = 0.4 * (1 - t * 0.65);
+        const g = s.createRadialGradient(x, y, 0, x, y, size);
+        g.addColorStop(0, hsl(hue, 100, Math.min(96, lum + 26), alpha * 1.15));
+        g.addColorStop(0.5, hsl(hue, 100, lum, alpha * 0.65));
+        g.addColorStop(1, hsl(Math.max(2, hue - 12), 100, lum * 0.6, 0));
+        s.fillStyle = g;
+        s.beginPath(); s.arc(x, y, size, 0, Math.PI * 2); s.fill();
+      }
+    }
+    // white-hot nozzle root at the hull
+    const root = s.createRadialGradient(c.x, c.y, 0, c.x, c.y, reach * 0.16);
+    root.addColorStop(0, hsl(54, 100, 94, 0.75));
+    root.addColorStop(1, hsl(48, 100, 78, 0));
+    s.fillStyle = root; s.beginPath(); s.arc(c.x, c.y, reach * 0.16, 0, Math.PI * 2); s.fill();
+    s.restore();
+    // embers spray off the trailing tips (world coords, like every other spawn)
+    for (let j = 0; j < f.jets; j++) {
+      if (Math.random() < 0.7) {
+        const ang = f.angle + (j / f.jets) * Math.PI * 2 - f.swoop;
+        const tip = { x: craftPos.x + Math.cos(ang) * f.reach * 0.92, y: craftPos.y + Math.sin(ang) * f.reach * 0.92 };
+        this.particles.burst(tip, 1, 22, { speed: 130, life: 0.5, lum: 60, spread: 2.0 });
+      }
+    }
+  }
+
+  // Generic renderer for the arsenal's transient effects (combat.fx) + mines.
+  // Weapons stay decoupled: they push primitives, we draw them by kind.
+  private drawArsenalFx(s: CanvasRenderingContext2D, combat: Combat, bz: number): void {
+    if (!combat.fx.length && !combat.mines.length) return;
+    s.save();
+    s.globalCompositeOperation = 'lighter';
+    for (const f of combat.fx) {
+      const a = Math.max(0, Math.min(1, f.life / f.max));
+      if (f.kind === 'ring') {
+        const p = this.w2b({ x: f.x, y: f.y }); const r = (f.r ?? 0) * bz;
+        const g = s.createRadialGradient(p.x, p.y, r * 0.72, p.x, p.y, r);
+        g.addColorStop(0, hsl(f.hue, 100, 60, 0)); g.addColorStop(1, hsl(f.hue, 100, 62, 0.14 * a));
+        s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, r, 0, Math.PI * 2); s.fill();
+        s.strokeStyle = hsl(f.hue, 100, 66, 0.5 * a); s.lineWidth = (f.width ?? 4) * bz;
+        s.beginPath(); s.arc(p.x, p.y, r, 0, Math.PI * 2); s.stroke();
+      } else if (f.kind === 'arc') {
+        const p = this.w2b({ x: f.x, y: f.y }); const r = (f.r ?? 0) * bz;
+        s.strokeStyle = hsl(f.hue, 100, 72, 0.75 * a); s.lineWidth = (f.width ?? 5) * bz;
+        s.beginPath(); s.arc(p.x, p.y, r, f.a0 ?? 0, f.a1 ?? 0); s.stroke();
+      } else if (f.kind === 'beam') {
+        const p = this.w2b({ x: f.x, y: f.y }); const q = this.w2b({ x: f.x2 ?? f.x, y: f.y2 ?? f.y });
+        s.strokeStyle = hsl(f.hue, 100, 72, 0.75 * a); s.lineWidth = (f.width ?? 4) * bz;
+        s.beginPath(); s.moveTo(p.x, p.y); s.lineTo(q.x, q.y); s.stroke();
+      } else if (f.kind === 'blast' || f.kind === 'well') {
+        const p = this.w2b({ x: f.x, y: f.y }); const r = (f.r ?? 0) * bz * (f.kind === 'blast' ? 1.1 - a * 0.4 : 1);
+        const g = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+        g.addColorStop(0, hsl(f.hue, 100, 82, 0.7 * a)); g.addColorStop(0.6, hsl(f.hue, 100, 60, 0.32 * a)); g.addColorStop(1, hsl(f.hue, 100, 50, 0));
+        s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, r, 0, Math.PI * 2); s.fill();
+      } else if (f.kind === 'bolt' && f.pts && f.pts.length >= 4) {
+        // jagged lightning through the node points, drawn as glow + core
+        const nodes: { x: number; y: number }[] = [];
+        for (let k = 0; k < f.pts.length; k += 2) nodes.push(this.w2b({ x: f.pts[k], y: f.pts[k + 1] }));
+        const jag: { x: number; y: number }[] = [nodes[0]];
+        for (let n = 0; n < nodes.length - 1; n++) {
+          const A = nodes[n], B = nodes[n + 1];
+          const dx = B.x - A.x, dy = B.y - A.y, ln = Math.hypot(dx, dy) || 1;
+          const px = -dy / ln, py = dx / ln;
+          const subs = 4;
+          for (let i = 1; i < subs; i++) {
+            const fr = i / subs;
+            const amp = Math.sin(this.t * 90 + n * 7 + i * 2.3) * ln * 0.12;
+            jag.push({ x: A.x + dx * fr + px * amp, y: A.y + dy * fr + py * amp });
+          }
+          jag.push(B);
+        }
+        const trace = (w: number, hue: number, lum: number, al: number): void => {
+          s.strokeStyle = hsl(hue, 100, lum, al * a); s.lineWidth = Math.max(1, w);
+          s.lineJoin = 'round'; s.lineCap = 'round';
+          s.beginPath();
+          jag.forEach((p, i) => (i ? s.lineTo(p.x, p.y) : s.moveTo(p.x, p.y)));
+          s.stroke();
+        };
+        trace(9 * bz, f.hue, 58, 0.35); // wide glow
+        trace(4 * bz, f.hue, 78, 0.85); // mid
+        trace(1.6 * bz, 190, 97, 0.95); // white-cyan core
+        for (const nd of nodes) { // bright sparks at each strike point
+          const r = 11 * bz;
+          const g = s.createRadialGradient(nd.x, nd.y, 0, nd.x, nd.y, r);
+          g.addColorStop(0, hsl(190, 100, 92, 0.8 * a)); g.addColorStop(1, hsl(200, 100, 70, 0));
+          s.fillStyle = g; s.beginPath(); s.arc(nd.x, nd.y, r, 0, Math.PI * 2); s.fill();
+        }
+      }
+    }
+    for (const m of combat.mines) {
+      const p = this.w2b({ x: m.x, y: m.y });
+      const pulse = 0.6 + 0.4 * Math.sin(this.t * 6 + m.x * 0.05);
+      const armed = m.arm <= 0;
+      const rr = 5 * bz * (armed ? 0.9 + 0.3 * pulse : 0.7);
+      const g = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, rr * 2.2);
+      g.addColorStop(0, hsl(armed ? 12 : 48, 100, 70, 0.8)); g.addColorStop(1, hsl(12, 100, 55, 0));
+      s.fillStyle = g; s.beginPath(); s.arc(p.x, p.y, rr * 2.2, 0, Math.PI * 2); s.fill();
+      s.fillStyle = hsl(armed ? 14 : 48, 100, 86, 0.9); s.beginPath(); s.arc(p.x, p.y, rr * 0.8, 0, Math.PI * 2); s.fill();
+      if (armed) { s.strokeStyle = hsl(12, 100, 60, 0.12 * pulse); s.lineWidth = 1; s.beginPath(); s.arc(p.x, p.y, m.radius * bz, 0, Math.PI * 2); s.stroke(); }
+    }
+    s.restore();
   }
 
   private drawNuke(m: CanvasRenderingContext2D): void {
