@@ -1,7 +1,7 @@
-// Visual identity — REPLACED-inspired. NOT neon-cyberpunk: a warm, sepia-toned
-// dark sci-fi look. Deep warm-black voids, muted cold dead worlds, and warm
-// amber light that BLOOMS back as you relight the galaxy. Heavy cinematic
-// bloom, vignette, film grain, and a chunky low-res pixel buffer do the rest.
+// Visual identity — GEOMETRY WARS. Pure black void, saturated neon vector line
+// art, and an over-bright bloom that floods the screen with colour. Nothing is
+// textured or filled: everything is a thin glowing outline. Simple, but
+// striking. The warping grid (render/grid.ts) sits under it all.
 // Change THEME and the whole game regrades.
 
 export interface Theme {
@@ -26,34 +26,41 @@ export interface Theme {
 }
 
 export const THEME: Theme = {
-  bg: '#0d0a0c',
-  bgDeep: '#060406',
-  void: '#171015',
-  ink: '#f4ead6',
-  inkDim: '#9c8a76',
-  panel: '#1f1820',
-  panelBorder: '#473542',
-  tether: '#6fd8d0',
-  tetherHot: '#fff3d8',
-  ghost: '#a8b0a0',
-  charge: '#ffb347',
-  ember: '#ff7a3c',
-  danger: '#ff5a4d',
-  good: '#ffb24a',
-  pale: '#b9c7ff',
-  rarity: { common: '#c2b196', rare: '#5fd6e0', cosmic: '#ff5cae' },
+  bg: '#000306',
+  bgDeep: '#000000',
+  void: '#00060e',
+  ink: '#ffffff',
+  inkDim: '#7d94b0',
+  panel: '#03080f',
+  panelBorder: '#1b4a7a',
+  tether: '#00e5ff',
+  tetherHot: '#ffffff',
+  ghost: '#2f5a80',
+  charge: '#ffe94d',
+  ember: '#c04dff',   // the gem motes — purple, per your call
+  danger: '#ff2b5e',
+  good: '#39ff88',
+  pale: '#9fd0ff',
+  rarity: { common: '#8fa3bf', rare: '#00e5ff', cosmic: '#ff2bd6' },
   font: '600 14px ui-monospace, "SF Mono", Menlo, monospace',
   fontDisplay: '800 28px ui-rounded, "Avenir Next", system-ui, sans-serif',
 };
 
-/** Body palette by kind — cold for the dead, warm for the lit. */
+/** Body palette by kind — saturated neon, one hue per kind. */
 export const BODY_HUES: Record<string, number> = {
-  planet: 188,
-  star: 34,
-  moon: 196,
-  pulsar: 192,
-  blackhole: 286,
-  derelict: 30,
+  planet: 190,
+  star: 48,
+  moon: 205,
+  pulsar: 185,
+  blackhole: 288,
+  derelict: 32,
+};
+
+/** Enemy hues — shape + colour together encode the threat, GW-style. */
+export const ENEMY_HUES: Record<string, number> = {
+  drone: 205,      // blue diamond — the chaser
+  hulk: 288,       // violet hexagon — the heavy
+  spreader: 320,   // magenta square — the 4-way shooter
 };
 
 export function hsl(h: number, s: number, l: number, a = 1): string {

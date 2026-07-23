@@ -379,6 +379,7 @@ function beginRun(): void {
   combat.spawn(runSeed + '-0', Combat.countFor(0, save.pact), field.bounds, field.spawn, save.pact);
   powerups.reset(); world.boost = 1; combat.frozen = false;
   renderer.biome = biomeFor(0);
+  renderer.grid.build(field.bounds);
   heading = 0; dead = false;
   audio.setDepth(0); audio.setTrack(0); if (musicEnabled) audio.startMusic();
   renderer.flash(40, 0.4);
@@ -434,6 +435,7 @@ function warpDeeper(): void {
   world.reset(field.bodies, field.spawn, v(0, 0), field.relics);
   combat.spawn(runSeed + '-' + run.depth, Combat.countFor(run.depth, save.pact), field.bounds, field.spawn, run.depth + save.pact);
   renderer.biome = biomeFor(run.depth);
+  renderer.grid.build(field.bounds);
   audio.warp(); audio.setDepth(run.depth); audio.setTrack(run.depth);
   renderer.triggerWarp();
   renderer.flash(190, 0.7); renderer.shake(14);
@@ -503,6 +505,7 @@ bus.on((e) => {
       break;
     case 'missileExplode':
       audio.boom();
+      renderer.grid.explosive(e.at.x, e.at.y, 5, 300);
       renderer.particles.burst(e.at, 10, 20, { speed: 180, life: 0.5 });
       break;
     case 'enemyHit':

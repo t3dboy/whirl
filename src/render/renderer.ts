@@ -4,7 +4,7 @@
 // Crisp UI (floating numbers, edge pointers) is drawn on top at full res.
 
 import { type Vec2, v, lerp, clamp, len, sub, scale } from '../core/math';
-import { THEME, BODY_HUES, hsl } from './theme';
+import { THEME, BODY_HUES, ENEMY_HUES, hsl } from './theme';
 import { BIOMES, type Biome } from './biomes';
 import { Particles } from './particles';
 import type { Body, CraftState, RelicInstance } from '../core/types';
@@ -12,6 +12,7 @@ import type { World } from '../physics/world';
 import type { Combat } from '../game/combat';
 import { type Powerups, POWERUPS, type PType } from '../game/powerups';
 import { drawShip } from './ships';
+import { WarpGrid } from './grid';
 import { type HullDef, hullById } from '../content/hulls';
 
 interface FloatText { x: number; y: number; vy: number; life: number; max: number; text: string; color: string; size: number; }
@@ -54,6 +55,8 @@ export class Renderer {
   hitShield(): void { this.shieldPulse = 1; }
   braking = false;           // draw the front retro-thrusters
   biome: Biome = BIOMES[0];  // current visual region
+  grid = new WarpGrid();     // the warping lattice under everything
+  private gbx: number[] = []; private gby: number[] = []; // cached grid buffer coords
 
   constructor(public canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -129,6 +132,18 @@ export class Renderer {
     if (this.banner) { this.banner.life -= dt; if (this.banner.life <= 0) this.banner = null; }
     if (this.shieldPulse > 0) this.shieldPulse = Math.max(0, this.shieldPulse - dt / 0.5);
     if (this.nukeFx.t > 0) this.nukeFx.t = Math.max(0, this.nukeFx.t - dt / 0.6);
+    // the craft drags the lattice along with it as it flies
+    this.grid.update(dt);
+    // black holes and suns pull the lattice into themselves
+    for (const b of world.bodies) {
+      if (b.kind === 'blackhole') this.grid.implosive(b.pos.x, b.pos.y, 26, b.soiRadius * 0.9);
+      else if (b.kind === 'star') this.grid.explosive(b.pos.x, b.pos.y, 4, b.radius * 3);
+    }
+    const wake = len(c.vel);
+    if (c.alive && wake > 30) {
+      const n = 1 / wake;
+      this.grid.directed(c.pos.x, c.pos.y, c.vel.x * n, c.vel.y * n, Math.min(0.9, wake / 900), 190);
+    }
     this.particles.step(dt);
     for (let i = this.floats.length - 1; i >= 0; i--) {
       const f = this.floats[i];
@@ -153,6 +168,7 @@ export class Renderer {
     const sh = this.cam.shake * this.pscale;
     s.save();
     s.translate((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh);
+    this.drawGrid(s); // the warping lattice sits under the whole scene
 
     if (this.warpOpen) this.drawWarpGate(s, bz);
     for (const b of world.bodies) this.drawBody(s, b, bz, b.id === world.craft.soiId);
@@ -178,9 +194,10 @@ export class Renderer {
     m.save();
     m.globalCompositeOperation = 'lighter';
     m.imageSmoothingEnabled = true;
-    m.filter = 'blur(5px)'; m.globalAlpha = 0.5; m.drawImage(this.scene, 0, 0, this.w, this.h);
-    m.filter = 'blur(14px)'; m.globalAlpha = 0.4; m.drawImage(this.scene, 0, 0, this.w, this.h);
-    m.filter = 'blur(30px)'; m.globalAlpha = 0.28; m.drawImage(this.scene, 0, 0, this.w, this.h);
+    // over-bright neon flood — Geometry Wars lives on this
+    m.filter = 'blur(4px)'; m.globalAlpha = 0.62; m.drawImage(this.scene, 0, 0, this.w, this.h);
+    m.filter = 'blur(12px)'; m.globalAlpha = 0.52; m.drawImage(this.scene, 0, 0, this.w, this.h);
+    m.filter = 'blur(28px)'; m.globalAlpha = 0.38; m.drawImage(this.scene, 0, 0, this.w, this.h);
     m.restore();
 
     this.postGrade(m);
@@ -210,35 +227,68 @@ export class Renderer {
     }
   }
 
+  // Geometry Wars grade: NO sepia wash, NO scanlines, NO film grain — those
+  // muddy the neon. Just the faintest biome colour key and a light vignette so
+  // the glow reads against pure black.
   private postGrade(m: CanvasRenderingContext2D): void {
-    // biome colour grade wash
-    m.save();
-    m.globalCompositeOperation = 'soft-light';
-    const gr = this.biome.grade;
-    m.fillStyle = `rgba(${gr[0]}, ${gr[1]}, ${gr[2]}, ${gr[3]})`;
-    m.fillRect(0, 0, this.w, this.h);
-    m.restore();
-
-    // vignette
-    const vg = m.createRadialGradient(this.w / 2, this.h / 2, this.h * 0.35, this.w / 2, this.h / 2, this.h * 0.85);
+    // NO full-screen wash at all — any additive tint lifts the blacks and the
+    // void stops being void. Biome identity lives in the grid/star/accent hues.
+    const vg = m.createRadialGradient(this.w / 2, this.h / 2, this.h * 0.42, this.w / 2, this.h / 2, this.h * 0.92);
     vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.42)');
     m.fillStyle = vg;
     m.fillRect(0, 0, this.w, this.h);
+  }
 
-    // scanlines
-    m.save();
-    m.globalAlpha = 0.06; m.fillStyle = '#000';
-    for (let y = 0; y < this.h; y += 3) m.fillRect(0, y, this.w, 1);
-    m.restore();
+  // The warping lattice. Every third line is brighter/thicker (classic GW), and
+  // the whole thing is batched into two strokes so thousands of segments stay
+  // cheap. Off-screen segments are culled.
+  private drawGrid(s: CanvasRenderingContext2D): void {
+    const g = this.grid;
+    if (!g.pts.length) return;
+    const z = this.cam.zoom * this.pscale;
+    const ox = -this.cam.x * z + this.bw / 2, oy = -this.cam.y * z + this.bh / 2;
+    const n = g.pts.length;
+    if (this.gbx.length !== n) { this.gbx = new Array(n); this.gby = new Array(n); }
+    const bx = this.gbx, by = this.gby;
+    for (let i = 0; i < n; i++) { const p = g.pts[i]; bx[i] = p.x * z + ox; by[i] = p.y * z + oy; }
 
-    // animated film grain
-    m.save();
-    m.globalCompositeOperation = 'overlay';
-    m.globalAlpha = 0.5;
-    const gx = (Math.random() * 120) | 0, gy = (Math.random() * 120) | 0;
-    m.drawImage(this.grain, -gx, -gy, this.w + 160, this.h + 160);
-    m.restore();
+    const M = 60, W = this.bw + M, H = this.bh + M;
+    const vis = (i: number, j: number): boolean => {
+      const ax = bx[i], ay = by[i], qx = bx[j], qy = by[j];
+      if (ax < -M && qx < -M) return false; if (ax > W && qx > W) return false;
+      if (ay < -M && qy < -M) return false; if (ay > H && qy > H) return false;
+      return true;
+    };
+    // cool electric blue, nudged a quarter of the way toward the biome's key
+    const acc = this.biome.accent;
+    let d = ((acc - 214) % 360 + 540) % 360 - 180; // shortest hue delta
+    const hue = (214 + d * 0.25 + 360) % 360;
+    s.save();
+    s.globalCompositeOperation = 'lighter';
+    for (let pass = 0; pass < 2; pass++) {
+      const thick = pass === 1;
+      s.beginPath();
+      for (let r = 0; r < g.rows; r++) {
+        for (let c = 0; c < g.cols; c++) {
+          const i = r * g.cols + c;
+          if (c + 1 < g.cols && (r % 3 === 0) === thick) {
+            const j = i + 1;
+            if (vis(i, j)) { s.moveTo(bx[i], by[i]); s.lineTo(bx[j], by[j]); }
+          }
+          if (r + 1 < g.rows && (c % 3 === 0) === thick) {
+            const j = i + g.cols;
+            if (vis(i, j)) { s.moveTo(bx[i], by[i]); s.lineTo(bx[j], by[j]); }
+          }
+        }
+      }
+      // GW keeps the lattice a cool, DIM blue — it must never flood the screen
+      // through the bloom. Only a quarter of the biome's hue bleeds in.
+      s.strokeStyle = thick ? hsl(hue, 80, 46, 0.30) : hsl(hue, 70, 36, 0.14);
+      s.lineWidth = thick ? 1.4 : 0.8;
+      s.stroke();
+    }
+    s.restore();
   }
 
   private drawStarfield(s: CanvasRenderingContext2D): void {
@@ -398,42 +448,52 @@ export class Renderer {
       s.restore();
     }
     s.restore();
-    // enemy craft — drones are small spinning triangles; hulks are big, slow
-    // hexagons with a health arc. Both glow hostile red, scaled by their size.
+    // Enemies, Geometry Wars style: hollow neon wireframes where the SHAPE and
+    // the COLOUR together tell you what it is. Blue diamond = chaser drone,
+    // violet hexagon = heavy hulk, magenta square = 4-way spreader. No fills —
+    // just bright outlines, double-stroked so the bloom makes them blaze.
     for (const e of combat.enemies) {
       const p = this.w2b(e.pos);
-      const r = Math.max(7, e.r * bz * 0.62);
-      const h = e.hue;
-      const sides = e.kind === 'hulk' ? 6 : e.kind === 'spreader' ? 4 : 3;
-      const big = e.kind !== 'drone';
+      const r = Math.max(7, e.r * bz * 0.7);
+      const h = ENEMY_HUES[e.kind] ?? e.hue;
+      const kind = e.kind;
+      const spin = this.t * (kind === 'hulk' ? 0.5 : kind === 'spreader' ? 0.9 : 1.3) + e.phase;
+      const pulse = 0.85 + 0.15 * Math.sin(this.t * 5 + e.phase);
       s.save();
       s.globalCompositeOperation = 'lighter';
-      const gl = s.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.6);
-      gl.addColorStop(0, hsl(h, 95, 60, big ? 0.7 : 0.55));
-      gl.addColorStop(1, hsl(h, 95, 50, 0));
-      s.fillStyle = gl;
-      s.beginPath(); s.arc(p.x, p.y, r * 2.6, 0, Math.PI * 2); s.fill();
-      s.restore();
-      const spin = this.t * (e.kind === 'hulk' ? 0.6 : e.kind === 'spreader' ? 1.0 : 1.5) + e.phase;
-      s.save();
       s.translate(p.x, p.y); s.rotate(spin);
-      s.fillStyle = hsl(h, 85, big ? 26 : 22);
-      s.strokeStyle = hsl(h, 100, 68); s.lineWidth = big ? 2.5 : 1.5;
-      s.beginPath();
-      for (let k = 0; k < sides; k++) {
-        const a = (k / sides) * Math.PI * 2;
-        s.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      const path = (): void => {
+        s.beginPath();
+        if (kind === 'drone') { // diamond
+          s.moveTo(0, -r * 1.25); s.lineTo(r * 0.85, 0); s.lineTo(0, r * 1.25); s.lineTo(-r * 0.85, 0);
+        } else if (kind === 'spreader') { // square, with its 4 firing spurs
+          s.moveTo(-r, -r); s.lineTo(r, -r); s.lineTo(r, r); s.lineTo(-r, r);
+        } else { // hexagon
+          for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; s.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+        }
+        s.closePath();
+      };
+      path(); s.strokeStyle = hsl(h, 100, 52, 0.55); s.lineWidth = 5 * pulse; s.stroke(); // glow pass
+      path(); s.strokeStyle = hsl(h, 100, 78, 0.95); s.lineWidth = 2; s.stroke();          // core line
+      if (kind === 'spreader') { // four spurs marking its fire axes
+        s.strokeStyle = hsl(h, 100, 85, 0.8); s.lineWidth = 1.5;
+        s.beginPath();
+        for (let k = 0; k < 4; k++) { const a = (k / 4) * Math.PI * 2; s.moveTo(Math.cos(a) * r, Math.sin(a) * r); s.lineTo(Math.cos(a) * r * 1.7, Math.sin(a) * r * 1.7); }
+        s.stroke();
       }
-      s.closePath(); s.fill(); s.stroke();
-      s.fillStyle = hsl(15, 100, 70);
-      s.beginPath(); s.arc(0, 0, big ? 4 : 2.5, 0, Math.PI * 2); s.fill();
+      if (kind === 'hulk') { // inner ring marks the heavy
+        s.beginPath(); s.arc(0, 0, r * 0.45, 0, Math.PI * 2);
+        s.strokeStyle = hsl(h, 100, 88, 0.85); s.lineWidth = 1.5; s.stroke();
+      }
       s.restore();
       // health arc for tougher enemies
       if (e.maxHp > 1 && e.hp < e.maxHp) {
-        s.strokeStyle = hsl(h, 100, 65, 0.9);
+        s.save();
+        s.globalCompositeOperation = 'lighter';
+        s.strokeStyle = hsl(h, 100, 80, 0.95);
         s.lineWidth = 2.5; s.lineCap = 'round';
-        s.beginPath(); s.arc(p.x, p.y, r + 6, -Math.PI / 2, -Math.PI / 2 + (e.hp / e.maxHp) * Math.PI * 2); s.stroke();
-        s.lineCap = 'butt';
+        s.beginPath(); s.arc(p.x, p.y, r + 7, -Math.PI / 2, -Math.PI / 2 + (e.hp / e.maxHp) * Math.PI * 2); s.stroke();
+        s.lineCap = 'butt'; s.restore();
       }
     }
   }

@@ -2,11 +2,30 @@
 
 > *the lower you dare loop, the more you mint, the more you can relight, the deeper you can fall — until you don't.*
 
-A browser-based gravity roguelike in the visual key of **Balatro** and **RACCOIN: Coin Pusher Roguelike** — loud, saturated, chunky neon on a deep void, numbers that pop, a felt-table sense of escalating greed. One verb: the tether.
+A browser-based gravity roguelite in the visual key of **Geometry Wars** — pure black void, saturated neon vector line art, an over-bright bloom, and a spring-mass **warping grid** under everything that ripples from explosions and buckles into black holes. Simple, but striking.
 
 ---
 
-## 0. Where we are now (M0 — DONE ✅)
+## 0. Current state (shipped & live) ✅
+
+Playable at **[t3dboy.github.io/whirl](https://t3dboy.github.io/whirl/)**. Everything below is in and released:
+
+- **Flight & relight** — spheres of influence, thruster flight, orbit-lock reignition, gravity-slung missiles, braking.
+- **Combat** — drone / hulk / spreader enemies (the 4-way spreader from sector 5), reinforcement escalation, destructible enemy missiles, a regenerating shield.
+- **Arsenal (in-run weapons)** — collect up to 3 auto-firing weapons per run via the draft weapon row and rare crates; at 3 you only level up. 7 built; ~20 more queued. Contract in `content/arsenal/types.ts` — new weapons are one self-contained module + one registry line.
+- **Flame Halo** — a levelling rotating flamethrower bought in the hangar.
+- **Powerups** — 8 timed/instant buffs dropped by kills, with a first-time explainer pause.
+- **Meta** — persistent Embers banked from magnetised gem drops, 5 hulls, weapon unlocks, high-score table, reset-progress.
+- **Endless** — no win condition; the dive continues until you die.
+- **Look** — the Geometry Wars overhaul: black void, neon wireframe enemies (shape + colour encode behaviour), warping grid, heavy bloom. No sepia/scanlines/grain.
+
+**Removed along the way:** the Pale (the shrinking cold rim — too restrictive), and the depth-7 auto-win.
+
+**Next:** the remaining arsenal weapons, line-shard particles, wireframe bodies, GW-styled menus.
+
+---
+
+## 0a. How we got here (M0 — DONE ✅)
 
 The **vertical slice is built, running, and tested.** *(Note: the core verb pivoted from a one-button grapple to free-flight exploration — see below.)*
 
@@ -28,7 +47,7 @@ On top of the proven core, now in and tested:
 - **Audio** — `audio/audio.ts` expanded by the audio team: depth-shifting key, reignite fanfare, warp whoosh, draft blip, SOI tone, a Pale drone that sours as the cold closes, thruster rumble.
 - **Render** — SOI field rings, gold ignition arcs, the Pale fog + rim, the warp-gate portal, thrust flame.
 
-Still open (next): pulsar / black-hole hazards, relics-in-danger pickups, meta-progression (Embers, unlocks, Pacts), Daily Cinder & Pilgrimage modes, balance sweeps.
+*(All of the above shipped. The **Pale** described here was later cut — it made the field too restrictive — and replaced by hazards (suns, black holes, pulsars) and relics. See section 0 for the current state.)*
 
 ## 1. Architecture — the contracts everything builds on
 
